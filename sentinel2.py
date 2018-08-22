@@ -25,7 +25,7 @@ class env(object):
 		##########################################
 		# variable for the getSentinel algorithm #
 		##########################################
-		self.metadataCloudCoverMax = 50;
+		self.metadataCloudCoverMax = 40;
 		
 		
 		##########################################
@@ -102,17 +102,19 @@ class functions():
 	
 	def main(self):
 		startDate = "2017-01-01"
-		endDate = "2017-01-30"
+		endDate = "2017-01-15"
 		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		#studyArea = ee.Geometry.Point([-77.65031459383312,-1.2834486218387362])
 		
 		s2 = self.getSentinel2(startDate,endDate,studyArea);
 		
+		print(s2.size().getInfo())
 		print(ee.Image(s2.first()).get("system:time_start").getInfo())
 		# masking the shadows
 		s2 = self.maskShadows(s2,studyArea)
 		print(s2.first().bandNames().getInfo())
-				
+		
+		self.collectionMeta = s2.getInfo()['features']		
 		# applying the atmospheric correction
 		#S2 = s2.map(self.TOAtoSR)
 
@@ -128,26 +130,37 @@ class functions():
 			print("sentinel cloud score...")
 			s2 = s2.map(self.sentinelCloudScore)
 			s2 = self.cloudMasking(s2)
-		print(s2.first().bandNames().getInfo())
+		#print(s2.first().bandNames().getInfo())
 		
 		# remove image with not enough data
 		s2 = s2.map(self.pixelArea)
-		s2 = s2.filter(ee.Filter.gt("pixelArea",100))
 		
+		s2 = s2.filter(ee.Filter.gt("pixelArea",10000))
+		print(s2.aggregate_histogram("pixelArea").getInfo())
 		if self.env.brdf == True:
 			print("apply brdf correction..")
 			s2 = s2.map(self.brdf)
-		print(s2.first().bandNames().getInfo())
+
+		#print(s2.first().bandNames().getInfo())
 
 	
 		if self.env.terrainCorrection == True:
-			print("calculate terrain")
-			s2 = s2.map(self.terrain)
+			print("apply terrain correction..")
+			s2 = s2.map(self.getTopo)
+			
+			corrected = s2.filter(ee.Filter.gt("slope",10))
+			notCorrected = s2.filter(ee.Filter.lt("slope",10))
+			
+			s2 = corrected.map(self.terrain).merge(notCorrected)
+		
 		print(s2.first().bandNames().getInfo())		
 		
 		
 		print("calculating medoid")
 		img = self.medoidMosaic(s2)
+
+		print("rescale")
+		img = self.reScaleS2(img)
 		
 		print("set MetaData")
 		img = setMetaData(img)
@@ -195,7 +208,17 @@ class functions():
 
 		return collection_tdom.map(mask)
 
-
+	def getTopo(self,img):
+		''' funtion to filter for areas with terrain and areas without'''
+		dem = self.env.dem.unmask(0)
+		geom = ee.Geometry(img.get('system:footprint')).bounds()
+		slp_rad = ee.Terrain.slope(dem).clip(geom);
+		
+		slope = slp_rad.reduceRegion(reducer= ee.Reducer.percentile([80]), \
+									 geometry= geom,\
+									 scale= 100 ,\
+									 maxPixels=10000000)
+		return img.set('slope',slope.get('slope'))
 
 	def scaleS2(self,img):
 		
@@ -207,6 +230,20 @@ class functions():
 		out = img.select(divideBands).divide(10000)
 		return out.addBands(others).copyProperties(img,['system:time_start','system:footprint','MEAN_SOLAR_ZENITH_ANGLE','MEAN_SOLAR_AZIMUTH_ANGLE']).set("centroid",img.geometry().centroid());
 
+
+	def reScaleS2(self,img):
+		
+		bandNames = img.bandNames()
+		otherBands = bandNames.removeAll(self.env.divideBands)
+				
+		t = ee.Image(self.env.divideBands);
+		t = t.multiply(10000)
+						
+		out = ee.Image(t.copyProperties(img).copyProperties(img,['system:time_start'])).addBands(others).int16()
+
+		return out;
+
+
 	def pixelArea(self,img):
 		geom = ee.Geometry(img.get('system:footprint')).bounds()
 
@@ -216,6 +253,7 @@ class functions():
 							     maxPixels=10000000)
 		
 		return img.set("pixelArea",area.get("red"))
+
 
 
 	def TOAtoSR(self,img):
