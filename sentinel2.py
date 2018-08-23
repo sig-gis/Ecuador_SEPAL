@@ -734,17 +734,19 @@ if __name__ == "__main__":
 	ee.Initialize()
 	
 	
-	startWeek = 40
+	startWeek = 39
 	startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
 	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
-	i = 12
 	
-	year = ee.Date("2015-01-01")
-	startDate = year.advance(startDay[i],"day")
-	endDate = year.advance(endDay[i],"day")
+	
+	for i in range(0,13,1)
+	
+		year = ee.Date("2015-01-01")
+		startDate = year.advance(startDay[i],"day")
+		endDate = year.advance(endDay[i],"day")
+			
+		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
-	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
-	
-	functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
+		functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
 	
 
