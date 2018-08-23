@@ -78,7 +78,7 @@ class env(object):
 		# Export variables		  		         #
 		##########################################		
 
-		self.assetId ="users/apoortinga/temp/"
+		self.assetId ="projects/Sacha/S2/S2_Biweekly/"
 		self.name = "Sentinel2_SR_Biweek_" 
 		self.exportScale = 10
 		
@@ -94,7 +94,7 @@ class env(object):
 		##########################################
 		# enable / disable modules 		         #
 		##########################################		
-		self.calcSR = False     
+		self.calcSR = True     
 		self.brdf = True
 		self.QAcloudMask = True
 		self.cloudMask = True
