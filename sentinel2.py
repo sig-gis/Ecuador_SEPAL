@@ -6,8 +6,8 @@ import math
 import datetime
 import os, sys
 from utils import *
-#sys.path.append("/gee-atmcorr-S2/bin/")
-#from atmospheric import Atmospheric
+sys.path.append("/gee-atmcorr-S2/bin/")
+from atmospheric import Atmospheric
 import sun_angles
 import view_angles
 import time
@@ -22,7 +22,7 @@ class env(object):
 		
 		self.dem = ee.Image("USGS/SRTMGL1_003")
 		self.epsg = "EPSG:32717"	
-			
+		self.feature = 0	
 		##########################################
 		# variable for the getSentinel algorithm #
 		##########################################
@@ -125,30 +125,39 @@ class functions():
 			
 			print(self.env.startDate.getInfo())
 			print(self.env.endDate.getInfo())
-			
+
+			print(ee.Image(s2.first()).get('system:time_start').getInfo())			
+
 			# masking the shadows
 			print("Masking shadows..") 
-			s2 = self.maskShadows(s2,studyArea)
-	
-			
-			self.collectionMeta = s2.getInfo()['features']		
-
-			# applying the atmospheric correction
-			#S2 = s2.map(self.TOAtoSR)
+			if self.env.shadowMask == True:
+				s2 = self.maskShadows(s2,studyArea)
+				
+			self.collectionMeta = s2.getInfo()['features']
+			print(ee.Image(s2.first()).get('system:time_start').getInfo())
 
 			print("scaling bands..")
-			s2 = s2.map(self.scaleS2).select(self.env.s2BandsIn,self.env.s2BandsOut)
+			s2 = s2.map(self.scaleS2)
+			print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
+			# applying the atmospheric correction
+			if self.env.calcSR  == True:
+				print("applying atmospheric correction")
+				s2 = s2.map(self.TOAtoSR).select(self.env.s2BandsIn,self.env.s2BandsOut)
+			print(ee.Image(s2.first()).get('system:time_start').getInfo())
+
 			
 			if self.env.QAcloudMask == True:
 				print("use QA band for cloud Masking")
 				s2 = s2.map(self.QAMaskCloud)
+			print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
 
 			if self.env.cloudMask == True:
 				print("sentinel cloud score...")
 				s2 = s2.map(self.sentinelCloudScore)
 				s2 = self.cloudMasking(s2)
+			print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
 			
 			# remove image with not enough data
@@ -241,6 +250,7 @@ class functions():
 		return out.addBands(others).copyProperties(img,['system:time_start','system:footprint','MEAN_SOLAR_ZENITH_ANGLE','MEAN_SOLAR_AZIMUTH_ANGLE']).set("centroid",img.geometry().centroid());
 
 
+
 	def reScaleS2(self,img):
 		
 		bandNames = img.bandNames()
@@ -274,7 +284,8 @@ class functions():
 		scene_date = datetime.datetime.utcfromtimestamp(info['system:time_start']/1000)# i.e. Python uses seconds, EE uses milliseconds
 		solar_z = info['MEAN_SOLAR_ZENITH_ANGLE']
         
-		geom = ee.Geometry.Point([info['centroid']['coordinates'][0],info['centroid']['coordinates'][1]])
+		geom = ee.Geometry(info['system:footprint']).centroid()	
+		#geom = ee.Geometry.Point([info['centroid']['coordinates'][0],info['centroid']['coordinates'][1]])
 		date = ee.Date.fromYMD(scene_date.year,scene_date.month,scene_date.day)
 		
 		h2o = Atmospheric.water(geom,date).getInfo()
@@ -378,9 +389,9 @@ class functions():
 		for band in ['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B9','B10','B11','B12']:
 			output = output.addBands(surface_reflectance(band))
 			
-		self.env.feature += 1
+		self.env.feature +=1
 		
-		return output.addBands(TDOMMask)
+		return output.addBands(TDOMMask).copyProperties(img,['system:time_start','system:footprint','MEAN_SOLAR_ZENITH_ANGLE','MEAN_SOLAR_AZIMUTH_ANGLE'])
 
 
 	# Function to mask clouds using the Sentinel-2 QA band.
@@ -739,8 +750,9 @@ if __name__ == "__main__":
 	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
 	
 	
-	for i in range(0,13,1)
-	
+	for i in range(9,13,1):
+		print(str(i))
+
 		year = ee.Date("2015-01-01")
 		startDate = year.advance(startDay[i],"day")
 		endDate = year.advance(endDay[i],"day")
