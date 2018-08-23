@@ -19,13 +19,20 @@ class env(object):
 		ee.Initialize()
 		
 		self.dem = ee.Image("USGS/SRTMGL1_003")
-		self.epgs = "EPSG:32717"
+		self.epsg = "EPSG:32717"
 				
 		##########################################
-		# variable for the getSentinel algorithm #
+		# variable for the landsat data request #
 		##########################################
 		self.metadataCloudCoverMax = 40;
-		
+
+		##########################################
+		# Export variables		  		         #
+		##########################################		
+
+		self.assetId ="users/apoortinga/temp/"
+		self.name = "landsat_SR_Biweek_" 
+		self.exportScale = 30		
 		
 		##########################################
 		# variable for the shadowMask  algorithm #
@@ -37,7 +44,7 @@ class env(object):
 
 		# shadowSumThresh: Sum of IR bands to include as shadows within TDOM and the 
 		# shadow shift method (lower number masks out less)
-		self.shadowSumThresh = 3500;
+		self.shadowSumThresh = 0.35;
 		
 		# contractPixels: The radius of the number of pixels to contract (negative buffer) clouds and cloud shadows by. Intended to eliminate smaller cloud 
 		#    patches that are likely errors (1.5 results in a -1 pixel buffer)(0.5 results in a -0 pixel buffer)
@@ -65,6 +72,7 @@ class env(object):
 		# the cloud score over time for a given pixel. Reduces commission errors over 
 		# cool bright surfaces. Generally between 5 and 10 works well. 0 generally is a bit noisy	
 		self.cloudScorePctl = 5; 	
+		self.hazeThresh = 200
 		
 		##########################################
 		# variable for terrain  algorithm        #
@@ -76,19 +84,20 @@ class env(object):
 		# variable band selection  		         #
 		##########################################		
 		
-        self.divideBands = ee.List(['blue','green','red','nir','swir1','swir2'])
-        self.bandNamesLandsat = ee.List(['blue','green','red','nir','swir1','thermal','swir2','sr_atmos_opacity','pixel_qa','radsat_qa'])
-        self.sensorBandDictLandsatSR = ee.Dictionary({'L8' : ee.List([1,2,3,4,5,7,6,9,10,11]))
-
+		self.divideBands = ee.List(['blue','green','red','nir','swir1','swir2'])
+		self.bandNamesLandsat = ee.List(['blue','green','red','nir','swir1','thermal','swir2','sr_atmos_opacity','pixel_qa','radsat_qa'])
+		self.sensorBandDictLandsatSR = ee.Dictionary({'L8' : ee.List([1,2,3,4,5,7,6,9,10,11])})
+        
+        
 		##########################################
 		# enable / disable modules 		         #
 		##########################################		  
-		self.brdf = True
-		self.QAcloudMask = True
+		self.maskSR = True
 		self.cloudMask = True
+		self.hazeMask = True
 		self.shadowMask = True
+		self.brdfCorrect = True
 		self.terrainCorrection = True
-
 
 class functions():       
 	def __init__(self):
@@ -97,15 +106,17 @@ class functions():
 	    # get the environment
 		self.env = env() 
 	
-	def main(self):
-		startDate = "2017-01-01"
-		endDate = "2017-01-15"
+	def main(self,studyArea,startDate,endDate,startDay,endDay,week):
 		
 		self.env.startDate = startDate
 		self.env.endDate = endDate
+		
+		self.env.startDoy = startDay
+		self.env.endDoy = endDay
+		
 		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
-		landsat8 = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterDate(self.env.startDate,self.env.endDate).filterBounds(self.env.location)
+		landsat8 = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterDate(self.env.startDate,self.env.endDate).filterBounds(studyArea)
 		landsat8 = landsat8.filterMetadata('CLOUD_COVER','less_than',self.env.metadataCloudCoverMax)
 		landsat8 = landsat8.select(self.env.sensorBandDictLandsatSR.get('L8'),self.env.bandNamesLandsat)
 		
@@ -126,7 +137,7 @@ class functions():
 			# mask clouds using cloud mask function
 			if self.env.shadowMask == True:
 				print "shadow masking"
-				landsat8 = self.maskShadows(landsat8)		
+				landsat8 = self.maskShadows(landsat8,studyArea)		
 			
 			landsat8 = landsat8.map(self.scaleLandsat)
 
@@ -137,13 +148,22 @@ class functions():
 					
 			if self.env.brdfCorrect == True:
 				landsat8 = landsat8.map(self.brdf)
-
 						
-			if self.env.terrainCorrection == True:
-				print "terrain correction"
-				landsat8 = ee.ImageCollection(landsat8.map(self.terrain))
+			#if self.env.terrainCorrection == True:
+			#	print "terrain correction"
+			#	landsat8 = ee.ImageCollection(landsat8.map(self.terrain))
 			
-			img = ee.Image(landsat8.first())
+			print("calculating medoid")
+			img = self.medoidMosaic(landsat8)
+						
+			print("rescale")
+			img = self.reScaleLandsat(img)
+						
+			print("set MetaData")
+			img = self.setMetaData(img)
+			
+			print("exporting composite")
+			self.exportMap(img,studyArea,week)
 
 	def CloudMaskSRL8(self,img):
 		"""apply cf-mask Landsat""" 
@@ -212,16 +232,16 @@ class functions():
 		ndsi = img.normalizedDifference(['green', 'swir1']);
 		ndsi_rescale = ndsi.subtract(ee.Number(0.8)).divide(ee.Number(0.6).subtract(ee.Number(0.8)))
 		score =  score.min(ndsi_rescale).multiply(100).byte();
-		mask = score.lt(self.env.cloudThreshold).rename(['cloudMask']);
+		mask = score.lt(self.env.cloudScoreThresh).rename(['cloudMask']);
 		img = img.updateMask(mask);
         
 		return img;
         
-	def maskShadows(self,collection,zScoreThresh=-0.8,shadowSumThresh=0.35,dilatePixels=2):
+	def maskShadows(self,collection,studyArea):
 
 		def TDOM(image):
-			zScore = image.select(self.env.shadowSumBands).subtract(irMean).divide(irStdDev)
-			irSum = image.select(self.env.shadowSumBands).reduce(ee.Reducer.sum())
+			zScore = image.select(shadowSumBands).subtract(irMean).divide(irStdDev)
+			irSum = image.select(shadowSumBands).reduce(ee.Reducer.sum())
 			TDOMMask = zScore.lt(self.env.zScoreThresh).reduce(ee.Reducer.sum()).eq(2)\
 				.And(irSum.lt(self.env.shadowSumThresh)).Not()
 			TDOMMask = TDOMMask.focal_min(self.env.dilatePixels)
@@ -230,11 +250,11 @@ class functions():
 			
 		shadowSumBands = ['nir','swir1']
 
-		self.fullCollection = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterBounds(self.env.location).select(self.env.sensorBandDictLandsatSR.get('L8'),self.env.bandNamesLandsat)  
+		self.fullCollection = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterBounds(studyArea).select(self.env.sensorBandDictLandsatSR.get('L8'),self.env.bandNamesLandsat)  
 
 		# Get some pixel-wise stats for the time series
-		irStdDev = self.fullCollection.select(self.env.shadowSumBands).reduce(ee.Reducer.stdDev())
-		irMean = self.fullCollection.select(self.env.shadowSumBands).reduce(ee.Reducer.mean())
+		irStdDev = self.fullCollection.select(shadowSumBands).reduce(ee.Reducer.stdDev())
+		irMean = self.fullCollection.select(shadowSumBands).reduce(ee.Reducer.mean())
 
 		# Mask out dark dark outliers
 		collection_tdom = collection.map(TDOM)
@@ -298,15 +318,25 @@ class functions():
 
 			img_plus_ic_mask2 = ee.Image(img_plus_ic.updateMask(mask2));
 
-			bandList = ee.List(['blue', 'green', 'red', 'nir', 'swir1', 'swir2']); # Specify Bands to topographically correct
+			bandList = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2']; # Specify Bands to topographically correct
     
+
+			def applyBands(image):
+				blue = apply_SCSccorr('blue').select(['blue'])
+				green = apply_SCSccorr('green').select(['green'])
+				red = apply_SCSccorr('red').select(['red'])
+				nir = apply_SCSccorr('nir').select(['nir'])
+				swir1 = apply_SCSccorr('swir1').select(['swir1'])
+				swir2 = apply_SCSccorr('swir2').select(['swir2'])
+				return replace_bands(image, [blue, green, red, nir, swir1, swir2])
+
 			def apply_SCSccorr(band):
 				method = 'SCSc';
-			
+		
 				out = img_plus_ic_mask2.select('IC', band).reduceRegion(reducer= ee.Reducer.linearFit(), \
-																			geometry= ee.Geometry(img.geometry().buffer(-5000)), \
-																			scale= 30, \
-																			maxPixels = 1e13); 
+																		geometry= ee.Geometry(img.geometry().buffer(-5000)), \
+																		scale= self.env.terrainScale, \
+																		maxPixels = 1e13); 
 
 				out_a = ee.Number(out.get('scale'));
 				out_b = ee.Number(out.get('offset'));
@@ -321,15 +351,14 @@ class functions():
 															'cvalue': out_c });
       
 				return ee.Image(SCSc_output);
+																  
+			#img_SCSccorr = ee.Image([apply_SCSccorr(band) for band in bandList]).addBands(img_plus_ic.select('IC'));
+			img_SCSccorr = applyBands(img).select(bandList).addBands(img_plus_ic.select('IC'))
+		
+			bandList_IC = ee.List([bandList, 'IC']).flatten();
 			
-				
-			# need to fix this in to map.. 
-			img_SCSccorr = img.select([]).addBands(apply_SCSccorr("blue")).addBands(apply_SCSccorr("red")) \
-																		  .addBands(apply_SCSccorr("green"))\
-																		  .addBands(apply_SCSccorr("nir")) \
-																		  .addBands(apply_SCSccorr("swir1"))\
-																		  .addBands(apply_SCSccorr("swir2"))\
-																		  
+			img_SCSccorr = img_SCSccorr.unmask(img_plus_ic.select(bandList_IC)).select(bandList);
+  			
 			return img_SCSccorr.unmask(img_plus_ic.select(bandList)) 
 	
 		
@@ -337,7 +366,7 @@ class functions():
 		img = topoCorr_IC(img)
 		img = topoCorr_SCSc(img)
 		
-		return img
+		return img.addBands(thermalBand)
   	
  
 	def brdf(self,img):   
@@ -453,14 +482,13 @@ class functions():
 		""" add metadata to image """
 		
 		img = ee.Image(img).set({'system:time_start':ee.Date(self.env.startDate).millis(), \
-								# 'startDOY':str(self.env.startDoy), \
-								# 'endDOY':str(self.env.endDoy), \
+								 'startDOY':str(self.env.startDoy), \
+								 'endDOY':str(self.env.endDoy), \
 								 'useCloudScore':str(self.env.cloudMask), \
 								 'useTDOM':str(self.env.shadowMask), \
-								 'useQAmask':str(self.env.QAcloudMask), \
+								 'useSRmask':str(self.env.maskSR ), \
 								 'useCloudProject':str(self.env.cloudMask), \
 								 'terrain':str(self.env.terrainCorrection), \
-								 'surfaceReflectance':str(self.env.calcSR), \
 								 'cloudScoreThresh':str(self.env.cloudScoreThresh), \
 								 'cloudScorePctl':str(self.env.cloudScorePctl), \
 								 'zScoreThresh':str(self.env.zScoreThresh), \
@@ -471,24 +499,37 @@ class functions():
 
 		return img
 
-	def exportMap(self,img):
+	def exportMap(self,img,studyArea,week):
 
-		t= time.strftime("%Y%m%d_%H%M%S")
-		week = 60
-		i = 1
-		name = "Sentinel2_SR_Biweek_" + str(week+i)
+		geom  = studyArea.getInfo();
 		
-		countries = ee.FeatureCollection('ft:1tdSwUL7MVpOauSgRzqVTOwdfy17KDbw-1d9omPw');
-		geom  = countries.filter(ee.Filter.inList('Country', ['Ecuador'])).geometry().bounds().getInfo();
-		print geom['coordinates']
-
 		task_ordered= ee.batch.Export.image.toAsset(image=img, 
-								  description=name, 
-								  #assetId="projects/Sacha/S2/S2_Biweekly/" + name ,
-								  assetId="users/apoortinga/temp/" + name ,
+								  description = self.env.name + str(week), 
+								  assetId= self.env.assetId + self.env.name + str(week),
 								  region=geom['coordinates'], 
 								  maxPixels=1e13,
 								  crs=self.env.epsg,
-								  scale=1000)
-		
+								  scale=self.env.exportScale)
+	
 		task_ordered.start() 
+
+
+
+if __name__ == "__main__":        
+
+	ee.Initialize()
+	
+	
+	startWeek = 40
+	startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
+	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
+	i = 1
+	
+	year = ee.Date("2015-01-01")
+	startDate = year.advance(startDay[i],"day")
+	endDate = year.advance(endDay[i],"day")
+	
+		
+	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
+	
+	functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)

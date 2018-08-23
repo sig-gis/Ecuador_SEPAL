@@ -21,7 +21,8 @@ class env(object):
 		ee.Initialize()
 		
 		self.dem = ee.Image("USGS/SRTMGL1_003")
-		self.epgs = "EPSG:32717"		
+		self.epsg = "EPSG:32717"	
+			
 		##########################################
 		# variable for the getSentinel algorithm #
 		##########################################
@@ -72,6 +73,14 @@ class env(object):
 		##########################################		
 		
 		self.terrainScale = 300
+
+		##########################################
+		# Export variables		  		         #
+		##########################################		
+
+		self.assetId ="users/apoortinga/temp/"
+		self.name = "Sentinel2_SR_Biweek_" 
+		self.exportScale = 10
 		
 		##########################################
 		# variable band selection  		         #
@@ -101,80 +110,75 @@ class functions():
 		self.env = env() 
 	
 	
-	def main(self):
-		startDate = "2017-01-01"
-		endDate = "2017-01-05"
+	def main(self,studyArea,startDate,endDate,startDay,endDay,week):
 		
 		self.env.startDate = startDate
 		self.env.endDate = endDate
-		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
-		#studyArea = ee.Geometry.Point([-77.65031459383312,-1.2834486218387362])
+		
+		self.env.startDoy = startDay
+		self.env.endDoy = endDay
 		
 		s2 = self.getSentinel2(startDate,endDate,studyArea);
-
+		
+		print(s2.size().getInfo())
 		if s2.size().getInfo() > 0:		
-			print(s2.size().getInfo())
-			print(ee.Image(s2.first()).get("system:time_start").getInfo())
+			
+			print(self.env.startDate.getInfo())
+			print(self.env.endDate.getInfo())
+			
 			# masking the shadows
+			print("Masking shadows..") 
 			s2 = self.maskShadows(s2,studyArea)
-			print(s2.first().bandNames().getInfo())
+	
 			
 			self.collectionMeta = s2.getInfo()['features']		
+
 			# applying the atmospheric correction
 			#S2 = s2.map(self.TOAtoSR)
 
 			print("scaling bands..")
 			s2 = s2.map(self.scaleS2).select(self.env.s2BandsIn,self.env.s2BandsOut)
-			print(ee.Image(s2.first()).get("system:time_start").getInfo())
+			
+			
 			if self.env.QAcloudMask == True:
 				print("use QA band for cloud Masking")
 				s2 = s2.map(self.QAMaskCloud)
-			print(s2.first().bandNames().getInfo())		
+			
 
 			if self.env.cloudMask == True:
 				print("sentinel cloud score...")
 				s2 = s2.map(self.sentinelCloudScore)
 				s2 = self.cloudMasking(s2)
-			#print(s2.first().bandNames().getInfo())
+			
 			
 			# remove image with not enough data
 			s2 = s2.map(self.pixelArea)
 			
 			s2 = s2.filter(ee.Filter.gt("pixelArea",10000))
-			print(s2.aggregate_histogram("pixelArea").getInfo())
+			
 			if self.env.brdf == True:
 				print("apply brdf correction..")
 				s2 = s2.map(self.brdf)
 
-			#print(s2.first().bandNames().getInfo())
-
-		
+					
 			if self.env.terrainCorrection == True:
 				print("apply terrain correction..")
 				s2 = s2.map(self.getTopo)
-				
 				corrected = s2.filter(ee.Filter.gt("slope",10))
 				notCorrected = s2.filter(ee.Filter.lt("slope",10))
-				
-				s2 = corrected.map(self.terrain).merge(notCorrected)
-			
-			print(s2.first().bandNames().getInfo())		
-			
+				s2 = corrected.map(self.terrain).merge(notCorrected)			
 			
 			print("calculating medoid")
 			img = self.medoidMosaic(s2)
-
+						
 			print("rescale")
 			img = self.reScaleS2(img)
-			
+						
 			print("set MetaData")
 			img = self.setMetaData(img)
-		
-			print(s2.size().getInfo())
-			print(s2.first().bandNames().getInfo())
-			print(img.bandNames().getInfo())
 			
-			self.exportMap(img)
+			print("exporting composite")
+			self.exportMap(img,studyArea,week)
 
 
 	def getSentinel2(self,start,end,studyArea):
@@ -243,7 +247,7 @@ class functions():
 		otherBands = bandNames.removeAll(self.env.divideBands)
 		others = img.select(otherBands)
 				
-		t = ee.Image(self.env.divideBands);
+		t = img.select(self.env.divideBands);
 		t = t.multiply(10000)
 						
 		out = ee.Image(t.copyProperties(img).copyProperties(img,['system:time_start'])).addBands(others).int16()
@@ -692,8 +696,8 @@ class functions():
 		""" add metadata to image """
 		
 		img = ee.Image(img).set({'system:time_start':ee.Date(self.env.startDate).millis(), \
-								# 'startDOY':str(self.env.startDoy), \
-								# 'endDOY':str(self.env.endDoy), \
+								 'startDOY':str(self.env.startDoy), \
+								 'endDOY':str(self.env.endDoy), \
 								 'useCloudScore':str(self.env.cloudMask), \
 								 'useTDOM':str(self.env.shadowMask), \
 								 'useQAmask':str(self.env.QAcloudMask), \
@@ -710,34 +714,37 @@ class functions():
 
 		return img
 
-	def exportMap(self,img):
+	def exportMap(self,img,studyArea,week):
 
-		t= time.strftime("%Y%m%d_%H%M%S")
-		week = 60
-		i = 1
-		name = "Sentinel2_SR_Biweek_" + str(week+i)
+		geom  = studyArea.getInfo();
 		
-		countries = ee.FeatureCollection('ft:1tdSwUL7MVpOauSgRzqVTOwdfy17KDbw-1d9omPw');
-		geom  = countries.filter(ee.Filter.inList('Country', ['Ecuador'])).geometry().bounds().getInfo();
-		print geom['coordinates']
-
 		task_ordered= ee.batch.Export.image.toAsset(image=img, 
-								  description=name, 
-								  #assetId="projects/Sacha/S2/S2_Biweekly/" + name ,
-								  assetId="users/apoortinga/temp/" + name ,
+								  description = self.env.name + str(week), 
+								  assetId= self.env.assetId + self.env.name + str(week),
 								  region=geom['coordinates'], 
 								  maxPixels=1e13,
 								  crs=self.env.epsg,
-								  scale=1000)
-		
+								  scale=self.env.exportScale)
+	
 		task_ordered.start() 
 		
 
 if __name__ == "__main__":        
-	
-		
-	
+
 	ee.Initialize()
-	functions().main()
+	
+	
+	startWeek = 40
+	startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
+	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
+	i = 12
+	
+	year = ee.Date("2015-01-01")
+	startDate = year.advance(startDay[i],"day")
+	endDate = year.advance(endDay[i],"day")
+		
+	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
+	
+	functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
 	
 
