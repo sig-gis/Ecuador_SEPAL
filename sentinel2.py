@@ -26,7 +26,7 @@ class env(object):
 		##########################################
 		# variable for the getSentinel algorithm #
 		##########################################
-		self.metadataCloudCoverMax = 40;
+		self.metadataCloudCoverMax = 80;
 		
 		
 		##########################################
@@ -120,7 +120,7 @@ class functions():
 		
 		s2 = self.getSentinel2(startDate,endDate,studyArea);
 		
-		print(s2.size().getInfo())
+		#print(s2.size().getInfo())
 		if s2.size().getInfo() > 0:		
 			
 			print(self.env.startDate.getInfo())
@@ -134,30 +134,30 @@ class functions():
 				s2 = self.maskShadows(s2,studyArea)
 				
 			self.collectionMeta = s2.getInfo()['features']
-			print(ee.Image(s2.first()).get('system:time_start').getInfo())
+			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 
 			print("scaling bands..")
 			s2 = s2.map(self.scaleS2)
-			print(ee.Image(s2.first()).get('system:time_start').getInfo())
+			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
 			# applying the atmospheric correction
 			if self.env.calcSR  == True:
 				print("applying atmospheric correction")
 				s2 = s2.map(self.TOAtoSR).select(self.env.s2BandsIn,self.env.s2BandsOut)
-			print(ee.Image(s2.first()).get('system:time_start').getInfo())
+			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 
 			
 			if self.env.QAcloudMask == True:
 				print("use QA band for cloud Masking")
 				s2 = s2.map(self.QAMaskCloud)
-			print(ee.Image(s2.first()).get('system:time_start').getInfo())
+			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
 
 			if self.env.cloudMask == True:
 				print("sentinel cloud score...")
 				s2 = s2.map(self.sentinelCloudScore)
 				s2 = self.cloudMasking(s2)
-			print(ee.Image(s2.first()).get('system:time_start').getInfo())
+			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
 			
 			# remove image with not enough data
@@ -721,13 +721,14 @@ class functions():
 								 'shadowSumThresh':str(self.env.shadowSumThresh), \
 								 'contractPixels':str(self.env.contractPixels), \
 								 'crs':self.env.epsg, \
+								 'cloudFilter':str(self.env.metadataCloudCoverMax),\
 								 'dilatePixels':str(self.env.dilatePixels)})
 
 		return img
 
 	def exportMap(self,img,studyArea,week):
 
-		geom  = studyArea.getInfo();
+		geom  = studyArea.bounds().getInfo();
 		
 		task_ordered= ee.batch.Export.image.toAsset(image=img, 
 								  description = self.env.name + str(week), 
@@ -743,21 +744,41 @@ class functions():
 if __name__ == "__main__":        
 
 	ee.Initialize()
+
+	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry() #.bounds();
+
 	
-	
+	# 2015	
+	year = ee.Date("2016-01-01")
 	startWeek = 39
 	startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
-	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
+	endDay =   [181,195,209,223,237,251,265,279,293,307,321,335,349,363,377]
+
+	# 2016
+	year = ee.Date("2016-01-01")
+	startWeek = 54
+	startDay = [13,27,41,55,69,83,97,111,125,139,153,167,181,195,209,223,237,251,265,279,293,307,321,335,349,363]
+	endDay = [26,40,54,68,82,96,110,124,138,152,166,180,194,208,222,236,250,264,278,292,306,320,334,348,362,376]
+
+	# 2017
+	year = ee.Date("2017-01-01")
+	startWeek = 80
+	startDay = [11,25,39,53,67,81,95,109,123,137,151,165,179,193,207,221,235,249,263,277,291,305,319,333,347,361]
+	endDay = [24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360,374]
 	
+	# 2018
+	#year = ee.Date("2018-01-01")
+	#startWeek = 106
+	#startDay = [10,24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360]
+	#endDay = [23,37,51,65,79,93,107,121,135,149,163,177,191,205,219,233,247,261,275,289,303,317,331,345,359,373]
 	
-	for i in range(9,13,1):
+	for i in range(0,len(startDay),1):
 		print(str(i))
 
-		year = ee.Date("2015-01-01")
 		startDate = year.advance(startDay[i],"day")
 		endDate = year.advance(endDay[i],"day")
 			
-		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
+		#studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry() #.bounds();
 		
 		functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
 	
