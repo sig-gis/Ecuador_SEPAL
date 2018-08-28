@@ -26,7 +26,7 @@ class env(object):
 		##########################################
 		# variable for the getSentinel algorithm #
 		##########################################
-		self.metadataCloudCoverMax = 80;
+		self.metadataCloudCoverMax = 60;
 		
 		
 		##########################################
@@ -72,7 +72,7 @@ class env(object):
 		# variable for terrain  algorithm        #
 		##########################################		
 		
-		self.terrainScale = 300
+		self.terrainScale = 1000
 
 		##########################################
 		# Export variables		  		         #
@@ -99,7 +99,7 @@ class env(object):
 		self.QAcloudMask = True
 		self.cloudMask = True
 		self.shadowMask = True
-		self.terrainCorrection = True
+		self.terrainCorrection = False
 
 
 class functions():       
@@ -173,8 +173,8 @@ class functions():
 			if self.env.terrainCorrection == True:
 				print("apply terrain correction..")
 				s2 = s2.map(self.getTopo)
-				corrected = s2.filter(ee.Filter.gt("slope",10))
-				notCorrected = s2.filter(ee.Filter.lt("slope",10))
+				corrected = s2.filter(ee.Filter.gt("slope",20))
+				notCorrected = s2.filter(ee.Filter.lt("slope",20))
 				s2 = corrected.map(self.terrain).merge(notCorrected)			
 			
 			print("calculating medoid")
@@ -730,9 +730,9 @@ class functions():
 
 		geom  = studyArea.bounds().getInfo();
 		
-		task_ordered= ee.batch.Export.image.toAsset(image=img, 
+		task_ordered= ee.batch.Export.image.toAsset(image=img.clip(studyArea.buffer(10000)), 
 								  description = self.env.name + str(week), 
-								  assetId= self.env.assetId + self.env.name + str(week),
+								  assetId= self.env.assetId + self.env.name + str(week).zfill(3),
 								  region=geom['coordinates'], 
 								  maxPixels=1e13,
 								  crs=self.env.epsg,
@@ -767,19 +767,18 @@ if __name__ == "__main__":
 	endDay = [24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360,374]
 	
 	# 2018
-	#year = ee.Date("2018-01-01")
-	#startWeek = 106
-	#startDay = [10,24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360]
-	#endDay = [23,37,51,65,79,93,107,121,135,149,163,177,191,205,219,233,247,261,275,289,303,317,331,345,359,373]
+	year = ee.Date("2018-01-01")
+	startWeek = 106
+	startDay = [10,24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360]
+	endDay = [23,37,51,65,79,93,107,121,135,149,163,177,191,205,219,233,247,261,275,289,303,317,331,345,359,373]
 	
-	for i in range(0,len(startDay),1):
+	for i in range(1,2,1):
 		print(str(i))
 
 		startDate = year.advance(startDay[i],"day")
 		endDate = year.advance(endDay[i],"day")
 			
-		#studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry() #.bounds();
-		
+	
 		functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
 	
 
