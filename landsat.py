@@ -18,20 +18,20 @@ class env(object):
 		# Initialize the Earth Engine object, using the authentication credentials.
 		ee.Initialize()
 		
-		self.dem = ee.Image("USGS/SRTMGL1_003")
+		self.dem = ee.Image("JAXA/ALOS/AW3D30_V1_1").select(["AVE"])
 		self.epsg = "EPSG:32717"
 				
 		##########################################
 		# variable for the landsat data request #
 		##########################################
-		self.metadataCloudCoverMax = 40;
+		self.metadataCloudCoverMax = 80;
 
 		##########################################
 		# Export variables		  		         #
 		##########################################		
 
 		self.assetId ="projects/Sacha/L8/L8_Biweekly/"
-		self.name = "landsat_SR_Biweek_V1_" 
+		self.name = "landsat_SR_Biweek_V2" 
 		self.exportScale = 30		
 		
 		##########################################
@@ -55,7 +55,7 @@ class env(object):
 		# and cloud shadows by. Intended to include edges of clouds/cloud shadows 
 		# that are often missed (1.5 results in a 1 pixel buffer)(0.5 results in a 0 pixel buffer)
 		# (2.5 or 3.5 generally is sufficient)
-		self.dilatePixels = 2.5;	
+		self.dilatePixels = 3.5;	
 		
 		
 		##########################################
@@ -605,17 +605,13 @@ class functions():
 if __name__ == "__main__":        
 
 	ee.Initialize()
-	
-	
+
 	start = 1
-	#startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
-	#endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
-	#i = 1
 	
-	for i in range(0,12,1):
+	for i in range(400,468,1):
 		startWeek = start+ i
 		print startWeek
-		'''
+	
 		year = ee.Date("2000-01-01")
 		startDay = (startWeek -1) *14
 		endDay = (startWeek) *14 -1
@@ -625,5 +621,5 @@ if __name__ == "__main__":
 		
 		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
-		functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek)'''
+		functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek)
 

@@ -20,13 +20,13 @@ class env(object):
 		# Initialize the Earth Engine object, using the authentication credentials.
 		ee.Initialize()
 		
-		self.dem = ee.Image("USGS/SRTMGL1_003")
+		self.dem =  ee.Image("JAXA/ALOS/AW3D30_V1_1").select(["AVE"])
 		self.epsg = "EPSG:32717"	
 			
 		##########################################
 		# variable for the getSentinel algorithm #
 		##########################################
-		self.metadataCloudCoverMax = 40;
+		self.metadataCloudCoverMax = 80;
 		
 		
 		##########################################
@@ -50,7 +50,7 @@ class env(object):
 		# and cloud shadows by. Intended to include edges of clouds/cloud shadows 
 		# that are often missed (1.5 results in a 1 pixel buffer)(0.5 results in a 0 pixel buffer)
 		# (2.5 or 3.5 generally is sufficient)
-		self.dilatePixels = 2.5;	
+		self.dilatePixels = 3.5;	
 		
 		
 		##########################################
@@ -61,7 +61,7 @@ class env(object):
 		# If cloudScoreTDOM is chosen
 		# cloudScoreThresh: If using the cloudScoreTDOMShift method-Threshold for cloud 
 		#    masking (lower number masks more clouds.  Between 10 and 30 generally works best)
-		self.cloudScoreThresh = 20;
+		self.cloudScoreThresh = 30;
 		
 		# Percentile of cloud score to pull from time series to represent a minimum for 
 		# the cloud score over time for a given pixel. Reduces commission errors over 
@@ -79,8 +79,8 @@ class env(object):
 		##########################################		
 
 		self.assetId ="projects/Sacha/S2/S2_Biweekly/"
-		self.name = "Sentinel2_SR_Biweek_" 
-		self.exportScale = 10
+		self.name = "Sentinel2_SR_Biweek_V2_" 
+		self.exportScale = 20
 		
 		##########################################
 		# variable band selection  		         #
@@ -619,37 +619,40 @@ class functions():
 		
 			def apply_SCSccorr(band):
 				method = 'SCSc';
-				
-				out = img_plus_ic_mask2.select('IC', band).reduceRegion(reducer= ee.Reducer.linearFit(), \
-																		geometry= geom, \
-																		scale= self.env.terrainScale , \
-																		maxPixels = 1e6); 
-				
-				
-				if out == None:
-					return img_plus_ic_mask2.select([band])
-
-				else:
-					out_a = ee.Number(out.get('scale'));
-					out_b = ee.Number(out.get('offset'));
-					out_c = ee.Number(out.get('offset')).divide(ee.Number(out.get('scale')));
 						
-					# apply the SCSc correction
-					SCSc_output = img_plus_ic_mask2.expression("((image * (cosB * cosZ + cvalue)) / (ic + cvalue))", {
+				out = ee.Image(1).addBands(img_plus_ic_mask2.select('IC', band)).reduceRegion(reducer= ee.Reducer.linearRegression(2,1), \
+  																	   geometry= ee.Geometry(img.geometry().buffer(-5000)), \
+																		scale= 300, \
+																		bestEffort =True,
+																		maxPixels=1e10)
+																					
+				
+				fit = out.combine({"coefficients": ee.Array([[1],[1]])}, False);
+
+				#Get the coefficients as a nested list, 
+				#cast it to an array, and get just the selected column
+				out_a = (ee.Array(fit.get('coefficients')).get([0,0]));
+				out_b = (ee.Array(fit.get('coefficients')).get([1,0]));
+				out_c = out_a.divide(out_b)
+
+					
+				# apply the SCSc correction
+				SCSc_output = img_plus_ic_mask2.expression("((image * (cosB * cosZ + cvalue)) / (ic + cvalue))", {
 																'image': img_plus_ic_mask2.select([band]),
 																'ic': img_plus_ic_mask2.select('IC'),
 																'cosB': img_plus_ic_mask2.select('cosS'),
 																'cosZ': img_plus_ic_mask2.select('cosZ'),
 																'cvalue': out_c });
-			  
-					return ee.Image(SCSc_output);
-				
-			img_SCSccorr = ee.Image([apply_SCSccorr(band) for band in bandList]).addBands(img_plus_ic.select('IC'));
-			bandList_IC = ee.List([bandList, 'IC']).flatten();
-			img_SCSccorr = img_SCSccorr.unmask(img_plus_ic.select(bandList_IC)).select(bandList);
-				
-			return img_SCSccorr.unmask(img_plus_ic.select(bandList))
+		  
+				return ee.Image(SCSc_output);
 			
+			img_SCSccorr = ee.Image([apply_SCSccorr(band) for band in bandList]).addBands(img_plus_ic.select('IC'));
+		
+			bandList_IC = ee.List([bandList, 'IC']).flatten();
+			
+			img_SCSccorr = img_SCSccorr.unmask(img_plus_ic.select(bandList_IC)).select(bandList);
+  			
+			return img_SCSccorr.unmask(img_plus_ic.select(bandList)) 			
 			
 		img = topoCorr_IC(img)
 		img = topoCorr_SCSc(img).addBands(others )
@@ -733,20 +736,20 @@ if __name__ == "__main__":
 
 	ee.Initialize()
 	
+	start = 1
 	
-	startWeek = 39
-	startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
-	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
+	for i in range(413,468,1):
+		startWeek = start+ i
+		print startWeek
 	
-	
-	for i in range(0,13,1)
-	
-		year = ee.Date("2015-01-01")
-		startDate = year.advance(startDay[i],"day")
-		endDate = year.advance(endDay[i],"day")
-			
+		year = ee.Date("2000-01-01")
+		startDay = (startWeek -1) *14
+		endDay = (startWeek) *14 -1
+		
+		startDate = year.advance(startDay,"day")
+		endDate = year.advance(endDay,"day")		
 		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
-		functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
+		functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek)
 	
 
