@@ -24,13 +24,13 @@ class env(object):
 		##########################################
 		# variable for the landsat data request #
 		##########################################
-		self.metadataCloudCoverMax = 40;
+		self.metadataCloudCoverMax = 60;
 
 		##########################################
 		# Export variables		  		         #
 		##########################################		
 
-		self.assetId ="users/apoortinga/temp/"
+		self.assetId ="projects/Sacha/L8/"
 		self.name = "landsat_SR_Biweek_" 
 		self.exportScale = 30		
 		
@@ -114,44 +114,44 @@ class functions():
 		self.env.startDoy = startDay
 		self.env.endDoy = endDay
 		
-		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
+		#studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
 		landsat8 = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterDate(self.env.startDate,self.env.endDate).filterBounds(studyArea)
 		landsat8 = landsat8.filterMetadata('CLOUD_COVER','less_than',self.env.metadataCloudCoverMax)
 		landsat8 = landsat8.select(self.env.sensorBandDictLandsatSR.get('L8'),self.env.bandNamesLandsat)
 		
-		print landsat8.size().getInfo()                 
+		print(landsat8.size().getInfo())
 		
 		if landsat8.size().getInfo() > 0:
 
 			# mask clouds using the QA band
 			if self.env.maskSR == True:
-				print "removing clouds" 
+				print("removing clouds")
 				landsat8 = landsat8.map(self.CloudMaskSRL8)    
 					
 			# mask clouds using cloud mask function
 			if self.env.hazeMask == True:
-				print "removing haze"
+				print("removing haze")
 				landsat8 = landsat8.map(self.maskHaze)
 
 			# mask clouds using cloud mask function
 			if self.env.shadowMask == True:
-				print "shadow masking"
+				print("shadow masking")
 				landsat8 = self.maskShadows(landsat8,studyArea)		
 			
 			landsat8 = landsat8.map(self.scaleLandsat)
 
 			# mask clouds using cloud mask function
 			if self.env.cloudMask == True:
-				print "removing some more clouds"
+				print("removing some more clouds")
 				landsat8 = landsat8.map(self.maskClouds)
 					
 			if self.env.brdfCorrect == True:
 				landsat8 = landsat8.map(self.brdf)
 						
-			#if self.env.terrainCorrection == True:
-			#	print "terrain correction"
-			#	landsat8 = ee.ImageCollection(landsat8.map(self.terrain))
+			if self.env.terrainCorrection == True:
+				print("terrain correction")
+				landsat8 = ee.ImageCollection(landsat8.map(self.terrain))
 			
 			print("calculating medoid")
 			img = self.medoidMosaic(landsat8)
@@ -262,8 +262,10 @@ class functions():
 		return collection_tdom
 
 
- 	def terrain(self,img):   
+	def terrain(self,img):   
 		degree2radian = 0.01745;
+
+		thermalBand = img.select(['thermal'])
  
 		def topoCorr_IC(img):
 			
@@ -436,7 +438,7 @@ class functions():
 
 			return (kvol, kvol0)
          
- 		date = img.date()
+		date = img.date()
 		footprint = determine_footprint(img)
 		(sunAz, sunZen) = sun_angles.create(date, footprint)
 		(viewAz, viewZen) = view_angles.create(footprint)
@@ -494,6 +496,7 @@ class functions():
 								 'zScoreThresh':str(self.env.zScoreThresh), \
 								 'shadowSumThresh':str(self.env.shadowSumThresh), \
 								 'contractPixels':str(self.env.contractPixels), \
+								 'cloudFilter':str(self.env.metadataCloudCoverMax),\
 								 'crs':str(self.env.epsg), \
 								 'dilatePixels':str(self.env.dilatePixels)})
 
@@ -501,11 +504,11 @@ class functions():
 
 	def exportMap(self,img,studyArea,week):
 
-		geom  = studyArea.getInfo();
+		geom  = studyArea.geometry().bounds().getInfo();
 		
-		task_ordered= ee.batch.Export.image.toAsset(image=img, 
+		task_ordered= ee.batch.Export.image.toAsset(image=img.clip(studyArea), 
 								  description = self.env.name + str(week), 
-								  assetId= self.env.assetId + self.env.name + str(week),
+								  assetId= self.env.assetId + self.env.name + str(week).zfill(3),
 								  region=geom['coordinates'], 
 								  maxPixels=1e13,
 								  crs=self.env.epsg,
@@ -519,18 +522,36 @@ if __name__ == "__main__":
 
 	ee.Initialize()
 	
-	
+	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias") #.geometry() #.bounds();
+
+
+	# 2015
+	year = ee.Date("2016-01-01")
 	startWeek = 39
 	startDay = [168,182,196,210,224,238,252,266,280,294,308,322,336,350,364]
-	endDay = [181,195,209,223,237,251,265,279,293,307,321,335,349,363,12,377]
-	i = 1
+	endDay =   [181,195,209,223,237,251,265,279,293,307,321,335,349,363,377]
+
+	# 2016
+	year = ee.Date("2016-01-01")
+	startWeek = 54
+	startDay = [13,27,41,55,69,83,97,111,125,139,153,167,181,195,209,223,237,251,265,279,293,307,321,335,349,363]
+	endDay = [26,40,54,68,82,96,110,124,138,152,166,180,194,208,222,236,250,264,278,292,306,320,334,348,362,376]
+
+ 	# 2017
+	year = ee.Date("2017-01-01")
+	startWeek = 80
+	startDay = [11,25,39,53,67,81,95,109,123,137,151,165,179,193,207,221,235,249,263,277,291,305,319,333,347,361]
+	endDay = [24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360,374]
+
+	# 2018
+	year = ee.Date("2018-01-01")
+	startWeek = 106
+	startDay = [10,24,38,52,66,80,94,108,122,136,150,164,178,192,206,220,234,248,262,276,290,304,318,332,346,360]
+	endDay = [23,37,51,65,79,93,107,121,135,149,163,177,191,205,219,233,247,261,275,289,303,317,331,345,359,373]
 	
-	for i in range(0,13,1):
-		year = ee.Date("2015-01-01")
+	
+	for i in range(2,3,1):
 		startDate = year.advance(startDay[i],"day")
 		endDate = year.advance(endDay[i],"day")
-		
-			
-		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
 		functions().main(studyArea,startDate,endDate,startDay[i],endDay[i],startWeek+i)
