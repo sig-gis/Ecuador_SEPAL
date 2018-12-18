@@ -6,7 +6,7 @@ import math
 import datetime
 import os, sys
 from utils import *
-sys.path.append("/gee-atmcorr-S2/bin/")
+sys.path.append("/gee-atmcorr-S2/bin")
 from atmospheric import Atmospheric
 import sun_angles
 import view_angles
@@ -80,7 +80,7 @@ class env(object):
 		##########################################		
 
 		self.assetId ="projects/Sacha/S2/S2_Biweekly/"
-		self.name = "Sentinel2_SR_Biweek_V2_" 
+		self.name = "S2_BW_" 
 		self.exportScale = 20
 		
 		##########################################
@@ -95,7 +95,7 @@ class env(object):
 		##########################################
 		# enable / disable modules 		         #
 		##########################################		
-		self.calcSR = True     
+		self.calcSR = False     
 		self.brdf = True
 		self.QAcloudMask = True
 		self.cloudMask = True
@@ -111,8 +111,9 @@ class functions():
 		self.env = env() 
 	
 	
-	def main(self,studyArea,startDate,endDate,startDay,endDay,week):
+	def main(self,studyArea,startDate,endDate,startDay,endDay,week,regionName):
 		
+		self.env.regionName = regionName
 		self.env.startDate = startDate
 		self.env.endDate = endDate
 		
@@ -120,15 +121,14 @@ class functions():
 		self.env.endDoy = endDay
 		
 		s2 = self.getSentinel2(startDate,endDate,studyArea);
-		
+
 		#print(s2.size().getInfo())
 		if s2.size().getInfo() > 0:		
 			
-			print(self.env.startDate.getInfo())
-			print(self.env.endDate.getInfo())
+			# print(self.env.startDate.getInfo())
+			# print(self.env.endDate.getInfo())
 
-			print(ee.Image(s2.first()).get('system:time_start').getInfo())			
-
+			
 			s2 = s2.map(self.scaleS2)
 			
 			# masking the shadows
@@ -139,8 +139,8 @@ class functions():
 			self.collectionMeta = s2.getInfo()['features']
 			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 
-			print("scaling bands..")
-			
+			print("rename bands, add date..")
+			s2 = s2.select(self.env.s2BandsIn,self.env.s2BandsOut).map(self.addDateYear)
 			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
 			
 			
@@ -148,7 +148,7 @@ class functions():
 				print("use QA band for cloud Masking")
 				s2 = s2.map(self.QAMaskCloud)
 			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
-			
+
 
 			if self.env.cloudMask == True:
 				print("sentinel cloud score...")
@@ -161,7 +161,7 @@ class functions():
 				s2 = s2.select(self.env.s2BandsOut,self.env.s2BandsIn)
 				print("applying atmospheric correction")
 				s2 = s2.map(self.TOAtoSR).select(self.env.s2BandsIn,self.env.s2BandsOut)
-			#print(ee.Image(s2.first()).get('system:time_start').getInfo())
+			#print(ee.Image(s2.first()).getInfo())
 
 				
 			if self.env.brdf == True:
@@ -179,16 +179,16 @@ class functions():
 			
 			print("calculating medoid")
 			img = self.medoidMosaic(s2)
-						
+		
 			print("rescale")
 			img = self.reScaleS2(img)
-						
+		
 			print("set MetaData")
 			img = self.setMetaData(img)
-			
+
 			print("exporting composite")
 			self.exportMap(img,studyArea,week)
-
+			#print(img.getInfo()['properties'])
 
 	def getSentinel2(self,start,end,studyArea):
 	
@@ -198,7 +198,19 @@ class functions():
 												 .filter(ee.Filter.lt('CLOUD_COVERAGE_ASSESSMENT',self.env.metadataCloudCoverMax))\
 		
 		return s2s
-
+	
+	def addDateYear(self,img):
+		#add a date and year band
+		date = ee.Date(img.get("system:time_start"))
+		
+		day = date.getRelative('day','year').add(1);
+		yr = date.get('year');
+		mk = img.mask().reduce(ee.Reducer.min());
+	  	
+		img = img.addBands(ee.Image.constant(day).mask(mk).uint16().rename('date'));
+		img = img.addBands(ee.Image.constant(yr).mask(mk).uint16().rename('year'));
+		
+		return img;
 
 	def maskShadows(self,collection,studyArea):
 
@@ -249,8 +261,6 @@ class functions():
 		out = img.select(divideBands).divide(10000)
 		return out.addBands(others).copyProperties(img,['system:time_start','system:footprint','MEAN_SOLAR_ZENITH_ANGLE','MEAN_SOLAR_AZIMUTH_ANGLE']).set("centroid",img.geometry().centroid());
 
-
-
 	def reScaleS2(self,img):
 		
 		bandNames = img.bandNames()
@@ -264,7 +274,6 @@ class functions():
 
 		return out;
 
-
 	def pixelArea(self,img):
 		geom = ee.Geometry(img.get('system:footprint')).bounds()
 
@@ -274,8 +283,6 @@ class functions():
 							     maxPixels=10000000)
 		
 		return img.set("pixelArea",area.get("red"))
-
-
 
 	def TOAtoSR(self,img):
 		
@@ -393,7 +400,6 @@ class functions():
 		
 		return output.addBands(TDOMMask).copyProperties(img,['system:time_start','system:footprint','MEAN_SOLAR_ZENITH_ANGLE','MEAN_SOLAR_AZIMUTH_ANGLE'])
 
-
 	# Function to mask clouds using the Sentinel-2 QA band.
 	def QAMaskCloud(self,img):
 		
@@ -457,8 +463,7 @@ class functions():
 		score = score.clamp(0,100);
   
 		return img.addBands(score.rename(['cloudScore']))
-	
-			
+				
 	def cloudMasking(self,collection):
 
 		def maskClouds(img):
@@ -670,7 +675,6 @@ class functions():
 
 		return img
 
-
 	def medoidMosaic(self,collection):
 		""" medoid composite with equal weight among indices """
 
@@ -695,7 +699,6 @@ class functions():
   
 		return medoid.addBands(others);
 
-
 	def medianMosaic(self,collection):
 		
 		""" median composite """ 
@@ -705,16 +708,20 @@ class functions():
     
 		return median.addBands(others)
 
-
 	def setMetaData(self,img):
 		""" add metadata to image """
 		
 		img = ee.Image(img).set({'system:time_start':ee.Date(self.env.startDate).millis(), \
+								 'regionName': str(self.env.regionName), \
+								 'assetId':str(self.env.assetId), \
+								 'compositingMethod':'medoid', \
+								 'exportScale':str(self.env.exportScale), \
 								 'startDOY':str(self.env.startDoy), \
 								 'endDOY':str(self.env.endDoy), \
 								 'useCloudScore':str(self.env.cloudMask), \
 								 'useTDOM':str(self.env.shadowMask), \
 								 'useQAmask':str(self.env.QAcloudMask), \
+								 'brdf':str(self.env.brdf), \
 								 'useCloudProject':str(self.env.cloudMask), \
 								 'terrain':str(self.env.terrainCorrection), \
 								 'surfaceReflectance':str(self.env.calcSR), \
@@ -723,8 +730,9 @@ class functions():
 								 'zScoreThresh':str(self.env.zScoreThresh), \
 								 'shadowSumThresh':str(self.env.shadowSumThresh), \
 								 'contractPixels':str(self.env.contractPixels), \
-								 'crs':self.env.epsg, \
+								 'epsg':self.env.epsg, \
 								 'cloudFilter':str(self.env.metadataCloudCoverMax),\
+								 'terrainScale':str(self.env.terrainScale), \
 								 'dilatePixels':str(self.env.dilatePixels)})
 
 		return img
@@ -732,37 +740,41 @@ class functions():
 	def exportMap(self,img,studyArea,week):
 
 		geom  = studyArea.bounds().getInfo();
+		sd = str(self.env.startDate.getRelative('day','year').getInfo()).zfill(3);
+		ed = str(self.env.endDate.getRelative('day','year').getInfo()).zfill(3);
+		year = str(self.env.startDate.get('year').getInfo());
+		regionName = self.env.regionName.replace(" ",'_') + "_"
 		
 		task_ordered= ee.batch.Export.image.toAsset(image=img.clip(studyArea.buffer(10000)), 
-								  description = self.env.name + str(week), 
-								  assetId= self.env.assetId + self.env.name + str(week).zfill(3),
+								  description = self.env.name + regionName + str(week).zfill(3) +'_'+ year + sd + ed, 
+								  assetId= self.env.assetId + self.env.name + regionName + str(week).zfill(3)+'_'+ year + sd + ed,
 								  region=geom['coordinates'], 
 								  maxPixels=1e13,
 								  crs=self.env.epsg,
 								  scale=self.env.exportScale)
 	
 		task_ordered.start() 
-		
 
 if __name__ == "__main__":        
 
 	ee.Initialize()
-
-	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry() #.bounds();
-
 	
 	start = 1
-	
-	for i in range(413,468,1):
+
+	for i in range(38,105,1):
+		#Jun 2015 starts at biweek 38
 		startWeek = start+ i
-		print startWeek
+		print(startWeek)
 	
-		year = ee.Date("2000-01-01")
+		year = ee.Date("2014-01-01")
 		startDay = (startWeek -1) *14
 		endDay = (startWeek) *14 -1
+
+		startDate = year.advance(startDay,"day") 
+		endDate = year.advance(endDay,"day") 
+
+		regionName = 'AMAZONIA NOROCCIDENTAL'
+		studyArea =  ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
+		studyArea = studyArea.filterMetadata('PROVINCIA','equals',regionName).geometry().bounds()
 		
-		startDate = year.advance(startDay,"day")
-		endDate = year.advance(endDay,"day")		
-		studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
-		
-		functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek)
+		print(functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName))
