@@ -138,7 +138,6 @@ class functions():
 			mosaic = self.setMetaData(mosaic)
 
 			self.exportMap(mosaic,self.env.location)
-
 			#return mosaic
        
 	def addDateYear(self,img):
