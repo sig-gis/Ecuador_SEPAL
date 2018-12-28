@@ -9,7 +9,15 @@ class env(object):
 
     def __init__(self):
         """Initialize the environment."""   
-         
+		##########################################
+		# Export variables		  		         #
+		##########################################		
+
+        self.assetId ="projects/Sacha/PreprocessedData/L8_Annual_V4/"
+        self.name = "LS_AN_" 
+        self.exportScale = 20	
+        self.epsg = "EPSG:32717"
+
         # Initialize the Earth Engine object, using the authentication credentials.       
         self.startDate = ""
         self.endDate = ""
@@ -25,8 +33,18 @@ class env(object):
         self.shadowMask = True
         self.brdfCorrect = True
         self.terrainCorrection = True
-        
-        
+
+        self.terrainScale = 600
+        self.dem = ee.Image("JAXA/ALOS/AW3D30_V1_1").select("MED")
+
+        self.cloudScoreThresh= 2
+        self.cloudScorePctl= 11
+        self.zScoreThresh= -0.8
+        self.shadowSumThresh= 0.15
+        self.contractPixels= 1.2
+        self.dilatePixels= 2.5
+
+                        
         self.SLC = False
         self.percentiles = [20,80] 
         
@@ -46,8 +64,8 @@ class functions():
 	    # get the environment
 		self.env = env() 	
 		
-	def getLandsat(self,aoi,year):
-
+	def getLandsat(self,aoi,year,regionName):
+		self.env.regionName = regionName
 		self.env.location = aoi
 		self.env.startDate = ee.Date.fromYMD(year,1,1)
 		self.env.endDate = ee.Date.fromYMD(year+1,1,1)
@@ -92,20 +110,21 @@ class functions():
 				landsat = self.maskShadows(landsat)
 			
 			
-			landsat = landsat.map(self.scaleLandsat)
+			landsat = landsat.map(self.scaleLandsat).map(self.addDateYear)
 
 			# mask clouds using cloud mask function
 			if self.env.cloudMask == True:
 				#print "removing some more clouds"
 				landsat = landsat.map(self.maskClouds)
+				#print('after cloud',landsat.first().getInfo())
 
 			if self.env.brdfCorrect == True:
 				landsat = landsat.map(self.brdf)
-
+				#print('after brdf',landsat.first().getInfo())
 						
 			if self.env.terrainCorrection == True:
 				landsat = ee.ImageCollection(landsat.map(self.terrain))
-			
+				#print('after terrain',landsat.first().getInfo())
 			
 			medoid = self.medoidMosaic(landsat)
 			medoidDown = ee.Image(self.medoidMosaicPercentiles(landsat,self.env.percentiles[0]))
@@ -114,9 +133,27 @@ class functions():
 			
 			mosaic = medoid.addBands(medoidDown).addBands(medoidUp).addBands(stdevBands)
 			
-			return mosaic
+			mosaic = self.reScaleLandsat(mosaic)
+
+			mosaic = self.setMetaData(mosaic)
+
+			self.exportMap(mosaic,self.env.location)
+
+			#return mosaic
        
-	
+	def addDateYear(self,img):
+		#add a date and year band
+		date = ee.Date(img.get("system:time_start"))
+		
+		day = date.getRelative('day','year').add(1);
+		yr = date.get('year');
+		mk = img.mask().reduce(ee.Reducer.min());
+	  	
+	  	img = img.addBands(ee.Image.constant(day).mask(mk).uint16().rename('date'));
+	  	img = img.addBands(ee.Image.constant(yr).mask(mk).uint16().rename('year'));
+		
+		return img;
+
 	def CloudMaskSRL8(self,img):
 		"""apply cf-mask Landsat""" 
 		QA = img.select("pixel_qa")
@@ -130,7 +167,20 @@ class functions():
 		thermal = img.select(ee.List(['thermal'])).multiply(0.1)
 		scaled = ee.Image(img).select(self.env.divideBands).multiply(ee.Number(0.0001))
 		
-		return img.select([]).addBands(scaled).addBands(thermal)
+		return img.select(['TDOMMask']).addBands(scaled).addBands(thermal)
+
+	def reScaleLandsat(self,img):
+		"""Landast is scaled by factor 0.0001 """
+        
+		thermalBand = ee.List(['thermal'])
+		thermal = ee.Image(img).select(thermalBand).multiply(10)
+                
+		otherBands = ee.Image(img).bandNames().removeAll(thermalBand)
+		scaled = ee.Image(img).select(otherBands).divide(0.0001)
+        
+		image = ee.Image(scaled.addBands(thermal)).int16()
+        
+		return image.copyProperties(img)
 		
 	def reScaleLandsat(self,img):
 		"""Landast is scaled by factor 0.0001 """
@@ -184,20 +234,22 @@ class functions():
 		ndsi = img.normalizedDifference(['green', 'swir1']);
 		ndsi_rescale = ndsi.subtract(ee.Number(0.8)).divide(ee.Number(0.6).subtract(ee.Number(0.8)))
 		score =  score.min(ndsi_rescale).multiply(100).byte();
-		mask = score.lt(self.env.cloudThreshold).rename(['cloudMask']);
-		img = img.updateMask(mask);
+		mask = score.lt(self.env.cloudScoreThresh).rename(['cloudMask']);
+		img = img.updateMask(mask).addBands([mask]);
         
 		return img;
         
-	def maskShadows(self,collection,zScoreThresh=-0.8,shadowSumThresh=0.35,dilatePixels=2):
+	def maskShadows(self,collection):
 
 		def TDOM(image):
 			zScore = image.select(shadowSumBands).subtract(irMean).divide(irStdDev)
 			irSum = image.select(shadowSumBands).reduce(ee.Reducer.sum())
-			TDOMMask = zScore.lt(zScoreThresh).reduce(ee.Reducer.sum()).eq(2)\
-				.And(irSum.lt(shadowSumThresh)).Not()
-			TDOMMask = TDOMMask.focal_min(dilatePixels)
+			TDOMMask = zScore.lt(self.env.zScoreThresh).reduce(ee.Reducer.sum()).eq(2)\
+				.And(irSum.lt(self.env.shadowSumThresh)).Not()
+			TDOMMask = TDOMMask.focal_min(self.env.contractPixels).focal_max(self.env.dilatePixels).rename(['TDOMMask'])
 			
+			image = image.addBands([TDOMMask])
+
 			return image.updateMask(TDOMMask)
 			
 		shadowSumBands = ['nir','swir1']
@@ -304,11 +356,11 @@ class functions():
 		
 		
 		degree2radian = 0.01745;
-		thermalBand = img.select(['thermal'])
+		otherBands = img.select(['thermal','date','year','TDOMMask','cloudMask'])
  
 		def topoCorr_IC(img):
 			
-			dem = ee.Image("JAXA/ALOS/AW3D30_V1_1").select("MED")
+			dem = self.env.dem
 			
 			
 			# Extract image metadata about solar position
@@ -376,7 +428,7 @@ class functions():
 						
 				out = ee.Image(1).addBands(img_plus_ic_mask2.select('IC', band)).reduceRegion(reducer= ee.Reducer.linearRegression(2,1), \
   																	   geometry= ee.Geometry(img.geometry().buffer(-5000)), \
-																		scale= 300, \
+																		scale= self.env.terrainScale, \
 																		bestEffort =True,
 																		maxPixels=1e10)
 																		
@@ -419,7 +471,7 @@ class functions():
 		img = topoCorr_IC(img)
 		img = topoCorr_SCSc(img)
 		
-		return img.addBands(thermalBand)
+		return img.addBands(otherBands)
 
   	
  
@@ -499,16 +551,16 @@ class functions():
 
 	def medoidMosaic(self,collection):
 		""" medoid composite with equal weight among indices """
-        
-		# calculate the median of temp band
-		thermal = ee.ImageCollection(collection.select(['thermal'])).median()
-                
+		nImages = ee.ImageCollection(collection).select([0]).count().rename('count')
+		bandNames = ee.Image(collection.first()).bandNames()
+		otherBands = bandNames.removeAll(self.env.divideBands)
+
+		others = collection.select(otherBands).reduce(ee.Reducer.mean()).rename(otherBands);
+		
 		collection = collection.select(self.env.divideBands)
 
-		bandNames = self.env.divideBands;
-		bandNumbers = ee.List.sequence(1,bandNames.length());
-        
-		# calculate medion
+		bandNumbers = ee.List.sequence(1,self.env.divideBands.length());
+
 		median = ee.ImageCollection(collection).median()
         
 		def subtractmedian(img):
@@ -517,9 +569,9 @@ class functions():
         
 		medoid = collection.map(subtractmedian)
   
-		medoid = ee.ImageCollection(medoid).reduce(ee.Reducer.min(bandNames.length().add(1))).select(bandNumbers,bandNames);
+		medoid = ee.ImageCollection(medoid).reduce(ee.Reducer.min(self.env.divideBands.length().add(1))).select(bandNumbers,self.env.divideBands);
   
-		return medoid.addBands(thermal);
+		return medoid.addBands(others).addBands(nImages);	
 
 
 	def medoidMosaicPercentiles(self,inCollection,p):
@@ -571,6 +623,46 @@ class functions():
 
 		return image;
 
+	def setMetaData(self,img):
+
+		img = ee.Image(img).set({'regionName': str(self.env.regionName),
+								 'system:time_start':ee.Date(self.env.startDate).millis(),
+								 'compositingMethod':'medoid',
+								 'toaOrSR':'SR',
+								 'epsg':str(self.env.epsg),
+								 'exportScale':str(self.env.exportScale),
+								 'shadowSumThresh':str(self.env.shadowSumThresh),
+								 'maskSR':str(self.env.maskSR),
+								 'cloudMask':str(self.env.cloudMask),
+								 'hazeMask':str(self.env.hazeMask),
+								 'shadowMask':str(self.env.shadowMask),
+								 'brdfCorrect':str(self.env.brdfCorrect),
+								 'terrainCorrection':str(self.env.terrainCorrection),
+								 'contractPixels':str(self.env.contractPixels),
+								 'dilatePixels':str(self.env.dilatePixels),
+								 'metadataCloudCoverMax':str(self.env.metadataCloudCoverMax),
+								 'hazeThresh':str(self.env.hazeThresh),
+								 'terrainScale':str(self.env.terrainScale)})
+
+		return img
+	def exportMap(self,img,studyArea):
+
+		geom  = studyArea.getInfo();
+		sd = str(self.env.startDate.getRelative('day','year').getInfo()).zfill(3);
+		ed = str(self.env.endDate.getRelative('day','year').getInfo()).zfill(3);
+		year = str(self.env.startDate.get('year').getInfo());
+		regionName = self.env.regionName.replace(" ",'_') + "_"
+
+		task_ordered= ee.batch.Export.image.toAsset(image=img, 
+								  description = self.env.name + regionName + year + sd + ed, 
+								  assetId= self.env.assetId + self.env.name + regionName + year + sd + ed,
+								  region=geom['coordinates'], 
+								  maxPixels=1e13,
+								  crs=self.env.epsg,
+								  scale=self.env.exportScale)
+	
+		task_ordered.start()
+		print(self.env.assetId + self.env.name + regionName + year + sd + ed)
         
 #def composite(aoi,year):
 #	img = ee.Image(functions().getLandsat(aoi,year))
@@ -579,24 +671,14 @@ class functions():
 
 if __name__ == "__main__":
 	#def composite(aoi,year):
-	
-	ee.Initialize()
-	year = 2016
+
+    ee.Initialize()
+    for i in range(0,10):
+        year = 2009 + i
  
-	studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias")
-	provinces = ee.List(["COTOPAXI","TUNGURAHUA","CHIMBORAZO","BOLIVAR","LOS RIOS"])
-	aoi = studyArea.filter(ee.Filter.inList("DPA_DESPRO",provinces)) #.geometry()
- 
-	img = ee.Image(functions().getLandsat(aoi,year))
-	img = ee.Image(img).multiply(10000).int16()
-	
-	region = aoi.geometry().bounds().getInfo()
-	#print region.getInfo()
-	
-	outputName = "projects/Sacha/Landcover/composites/composite" + str(year)
-	
-	task_ordered = ee.batch.Export.image.toAsset(image=ee.Image(img), description="Export "+str(year), assetId=outputName,region=region['coordinates'], maxPixels=1e13,scale=30 )
-	
-	# start task
-	task_ordered.start() 
-	
+        regionName = 'SIERRA'
+        studyArea =  ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
+        studyArea = studyArea.filterMetadata('PROVINCIA','equals',regionName).geometry().bounds()
+        
+        print(functions().getLandsat(studyArea,year,regionName))
+
