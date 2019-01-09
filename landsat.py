@@ -1,5 +1,5 @@
 # Sentinel-2 package
-
+from paramsTemplate import *
 import ee
 from Py6S import *
 import math
@@ -37,7 +37,7 @@ class env(object):
 		##########################################
 		# variable for the shadowMask  algorithm #
 		##########################################
-	
+
 		# zScoreThresh: Threshold for cloud shadow masking- lower number masks out 
 		# less. Between -0.8 and -1.2 generally works well
 		self.zScoreThresh = -0.9
@@ -71,7 +71,7 @@ class env(object):
 		# Percentile of cloud score to pull from time series to represent a minimum for 
 		# the cloud score over time for a given pixel. Reduces commission errors over 
 		# cool bright surfaces. Generally between 5 and 10 works well. 0 generally is a bit noisy	
-		self.cloudScorePctl = 8; 	
+		self.cloudScorePctl = 8 	
 		self.hazeThresh = 195
 		
 		##########################################
@@ -117,9 +117,17 @@ class functions():
 
 		self.env.startDoy = startDay
 		self.env.endDoy = endDay
-		self.regionName = regionName
+		self.env.regionName = regionName
 		
 		self.studyArea = studyArea
+		self.paramSwitch = Switcher().paramSelect(self.env.regionName)
+
+		self.env.cloudScoreThresh = self.paramSwitch[0]
+		self.env.cloudScorePctl= self.paramSwitch[1]
+		self.env.zScoreThresh= self.paramSwitch[2]
+		self.env.shadowSumThresh= self.paramSwitch[3]
+		self.env.contractPixels= self.paramSwitch[4]
+		self.env.dilatePixels= self.paramSwitch[5]
 
 		#studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
 		
@@ -186,7 +194,7 @@ class functions():
 			
 			print("exporting composite")
 			self.exportMap(img,studyArea,week)
-			#print(img.getInfo()['bands'])
+			#print(img.getInfo()['properties'])
 
 	def addDateYear(self,img):
 		#add a date and year band
@@ -218,14 +226,15 @@ class functions():
 		
 	def reScaleLandsat(self,img):
 		"""Landast is scaled by factor 0.0001 """
-        
+		noScaleBands = ee.List(['date','year','TDOMMask','cloudMask','count'])
+		noScale = ee.Image(img).select(noScaleBands)
 		thermalBand = ee.List(['thermal'])
 		thermal = ee.Image(img).select(thermalBand).multiply(10)
                 
-		otherBands = ee.Image(img).bandNames().removeAll(thermalBand)
+		otherBands = ee.Image(img).bandNames().removeAll(thermalBand).removeAll(noScaleBands)
 		scaled = ee.Image(img).select(otherBands).divide(0.0001)
         
-		image = ee.Image(scaled.addBands(thermal)).int16()
+		image = ee.Image(scaled.addBands([thermal,noScale])).int16()
         
 		return image.copyProperties(img)
 
@@ -235,7 +244,6 @@ class functions():
 		haze = opa.gt(self.env.hazeThresh)
 		return img.updateMask(haze.Not())
  
-
 	def maskClouds(self,img):
 		"""
 		Computes spectral indices of cloudyness and take the minimum of them.
@@ -296,7 +304,6 @@ class functions():
 		collection_tdom = collection.map(TDOM)
 
 		return collection_tdom
-
 
 	def terrain(self,img):   
 		
@@ -474,8 +481,6 @@ class functions():
         
 		return img.updateMask(mask)
 
-
-
  	def brdf(self,img):   
 		
 		import sun_angles
@@ -549,8 +554,7 @@ class functions():
 		(viewAz, viewZen) = view_angles.create(footprint)
 		(kvol, kvol0) = _kvol(sunAz, sunZen, viewAz, viewZen)
 		return _apply(img, kvol.multiply(PI()), kvol0.multiply(PI()))
-
- 			
+	
 	def medoidMosaic(self,collection):
 		""" medoid composite with equal weight among indices """
 		nImages = ee.ImageCollection(collection).select([0]).count().rename('count')
@@ -584,10 +588,9 @@ class functions():
     
 		return median.addBands(others)
 
-
 	def setMetaData(self,img):
 
-			img = ee.Image(img).set({'regionName': str(self.regionName),
+			img = ee.Image(img).set({'regionName': str(self.env.regionName),
 									 'system:time_start':ee.Date(self.env.startDate).millis(),
 									 'startDOY':str(self.env.startDoy),
 									 'endDOY':str(self.env.endDoy),
@@ -605,6 +608,7 @@ class functions():
 									 'terrainCorrection':str(self.env.terrainCorrection),
 									 'contractPixels':str(self.env.contractPixels),
 									 'dilatePixels':str(self.env.dilatePixels),
+									 'zScoreThresh':str(self.env.zScoreThresh),
 									 'metadataCloudCoverMax':str(self.env.metadataCloudCoverMax),
 									 'cloudScorePctl':str(self.env.cloudScorePctl),
 									 'hazeThresh':str(self.env.hazeThresh),
@@ -618,7 +622,7 @@ class functions():
 		sd = str(self.env.startDate.getRelative('day','year').getInfo()).zfill(3);
 		ed = str(self.env.endDate.getRelative('day','year').getInfo()).zfill(3);
 		year = str(self.env.startDate.get('year').getInfo());
-		regionName = self.regionName.replace(" ",'_') + "_"
+		regionName = self.env.regionName.replace(" ",'_') + "_"
 
 		task_ordered= ee.batch.Export.image.toAsset(image=img, 
 								  description = self.env.name + regionName + str(week).zfill(3) +'_'+ year + sd + ed, 
@@ -637,23 +641,22 @@ if __name__ == "__main__":
 
 	ee.Initialize()
 
-	start = 1
-	
+	start = 0
+
 	for i in range(0,105,1):
 		#2018 starts at week 104
 		startWeek = start+ i
 		print startWeek
 	
-		year = ee.Date("2014-01-01")
+		year = ee.Date("2009-01-01")
 		startDay = (startWeek -1) *14
 		endDay = (startWeek) *14 -1
 
-		startDate = year.advance(startDay,"day") 
-		endDate = year.advance(endDay,"day") 
+		startDate = year.advance(startDay,'day') 
+		endDate = year.advance(endDay,'day')
 
-		regionName = 'AMAZONIA NOROCCIDENTAL'
+		regionName = 'SIERRA'
 		studyArea =  ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
 		studyArea = studyArea.filterMetadata('PROVINCIA','equals',regionName).geometry().bounds()
 		
 		print(functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName))
-
