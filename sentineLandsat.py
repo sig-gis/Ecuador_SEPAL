@@ -24,7 +24,7 @@ class env(object):
 		##########################################
 		# variable for the landsat data request #
 		##########################################
-		self.metadataCloudCoverMax = 60;
+		self.metadataCloudCoverMax = 30;
 
 		##########################################
 		# Export variables		  		         #
@@ -32,9 +32,9 @@ class env(object):
 
 		#self.assetId ="projects/Sacha/PreprocessedData/L8_Biweekly_V4/"
 		self.assetId ="projects/Sacha/PreprocessedData/TOA_composites"
-		self.name = "composite_2016_l7_median" 
+		self.name = "LSS2_ECUADOR_ANNUAL_MEDIAN_2018_000365" 
 		self.exportScale = 20		
-		
+	
 		##########################################
 		# variable for the shadowMask  algorithm #
 		##########################################
@@ -644,6 +644,7 @@ class sentinel2():
 		self.env.endDoy = endDay
 		
 		s2 = self.getSentinel2(startDate,endDate,studyArea);
+		print(s2.size().getInfo())
 
 		if s2.size().getInfo() > 0:		
 			
@@ -1067,8 +1068,7 @@ def exportMap(self,img,studyArea,week):
 							  scale=self.env.exportScale)
 
 	task_ordered.start()
-	print(self.env.assetId + self.env.name + regionName + str(week).zfill(3)+'_'+ year + sd + ed)		
-
+	
 class Harmonize():
 	def __init__(self):
 		"""Initialize the Surfrace Reflectance app."""  
@@ -1130,7 +1130,7 @@ if __name__ == "__main__":
 		startWeek = start+ i
 		print "week", startWeek
 	
-		year = ee.Date("2017-01-01")
+		year = ee.Date("2018-01-01")
 		startDay = 0 #(startWeek -1) *14
 		endDay = 365 #(startWeek) *31 -1
 		print startDay, endDay
@@ -1149,7 +1149,7 @@ if __name__ == "__main__":
 		s2 = sentinel2().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName)
 	
 		collection = Harmonize().harmonizeData(landsat,s2)
-		print(collection.size().getInfo())
+		#print(collection.size().getInfo())
 		
 		#medoid = Harmonize().medoidMosaic(collection)
 		#medoid = medoid.set("system:time_start",startDate.millis())
@@ -1161,7 +1161,7 @@ if __name__ == "__main__":
 		
 		percentiles = percentiles.select(inbands,outbands)
 		
-		print percentiles.bandNames().getInfo()
+		#print percentiles.bandNames().getInfo()
 		nImages = ee.ImageCollection(collection).select([0]).count().rename('count')
 		
 		medoid = medoid.addBands(percentiles)
@@ -1169,6 +1169,6 @@ if __name__ == "__main__":
 		medoid = medoid.addBands(nImages)
 		Harmonize().exportMap(medoid,studyArea,startWeek)
 		
-		print(medoid.bandNames().getInfo())
+		#print(medoid.bandNames().getInfo())
 
 
