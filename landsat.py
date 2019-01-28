@@ -771,7 +771,7 @@ if __name__ == "__main__":
 		startDate = year.advance(startDay,'day')
 		endDate = year.advance(endDay,'day')
 
-		# set up for yearly exports
+		# set up for yearly exports.
 		# startDay = 0
 		# endDay = 364
 
