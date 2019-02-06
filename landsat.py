@@ -24,14 +24,16 @@ class env(object):
 		##########################################
 		# variable for the landsat data request #
 		##########################################
-		self.metadataCloudCoverMax = 100;
+		self.metadataCloudCoverMax = 80;
 
 		##########################################
 		# Export variables		  		         #
 		##########################################		
 
-		self.assetId ="projects/Sacha/PreprocessedData/L8_Biweekly_V4/"
+		self.assetId ="projects/Sacha/PreprocessedData/L8_Biweekly_V5/"
 		self.name = "LS_BW_" 
+
+
 		self.exportScale = 20		
 		
 		##########################################
@@ -82,14 +84,17 @@ class env(object):
 		
 		##########################################
 		# variable band selection  		         #
-		##########################################		
-		
+		##########################################
+		self.percentiles = [25,75]
+
+		self.medoidBands = ee.List(['blue','green','red','nir','swir1','swir2'])
 		self.divideBands = ee.List(['blue','green','red','nir','swir1','swir2'])
+		self.medoidIncludeBands = ee.List(['blue','green','red','nir','swir1','swir2','pixel_qa'])
 		self.bandNamesLandsat = ee.List(['blue','green','red','nir','swir1','thermal','swir2','sr_atmos_opacity','pixel_qa','radsat_qa'])
 		self.sensorBandDictLandsatSR = ee.Dictionary({'L8' : ee.List([1,2,3,4,5,7,6,9,10,11]),\
-                                                      'L7' : ee.List([0,1,2,3,4,5,6,7,9,10]),\
-                                                      'L5' : ee.List([0,1,2,3,4,5,6,7,9,10]),\
-                                                      'L4' : ee.List([0,1,2,3,4,5,6,7,9,10])})
+													  'L7' : ee.List([0,1,2,3,4,5,6,7,9,10]),\
+													  'L5' : ee.List([0,1,2,3,4,5,6,7,9,10]),\
+													  'L4' : ee.List([0,1,2,3,4,5,6,7,9,10])})
 		
 		
 		##########################################
@@ -101,12 +106,15 @@ class env(object):
 		self.shadowMask = True
 		self.brdfCorrect = True
 		self.terrainCorrection = True
+		self.biweek = True
+		self.compositingMethod = 'Medoid'
+
 
 class functions():       
 	def __init__(self):
 		"""Initialize the Surfrace Reflectance app."""  
  
-	    # get the environment
+		# get the environment
 		self.env = env() 
 	
 	def main(self,studyArea,startDate,endDate,startDay,endDay,week,regionName):
@@ -145,35 +153,31 @@ class functions():
 
 
 		landsat = landsat5.merge(landsat7).merge(landsat8)
-		          
+				  
 
 		if landsat.size().getInfo() > 0:
 			
 			# mask clouds using the QA band
 			if self.env.maskSR == True:
 				#print "removing clouds" 
-				landsat = landsat.map(self.CloudMaskSRL8)    
-			
-			
+				landsat = landsat.map(self.CloudMaskSRL8)
+
 			# mask clouds using cloud mask function
 			if self.env.hazeMask == True:
 				#print "removing haze"
 				landsat = landsat.map(self.maskHaze)
-
-
-			# mask clouds using cloud mask function
-			if self.env.shadowMask == True:
-				#print "shadow masking"
-				self.fullCollection = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterBounds(studyArea).select(self.env.sensorBandDictLandsatSR.get('L8'),self.env.bandNamesLandsat)  
-				landsat = self.maskShadows(landsat)
-					
+	
 			landsat = landsat.map(self.scaleLandsat).map(self.addDateYear)
 
 			# mask clouds using cloud mask function
 			if self.env.cloudMask == True:
 				#print "removing some more clouds"
 				landsat = landsat.map(self.maskClouds)
-				
+
+			# mask clouds using cloud mask function
+			if self.env.shadowMask == True:
+				#print "shadow masking"
+				landsat = self.maskShadows(landsat)
 
 			if self.env.brdfCorrect == True:
 				landsat = landsat.map(self.brdf)
@@ -182,19 +186,117 @@ class functions():
 			if self.env.terrainCorrection == True:
 				landsat = ee.ImageCollection(landsat.map(self.terrain))
 
+			if self.env.compositingMethod == 'Medoid':
+				print("calculating medoid")
+				img = self.medoidMosaic(landsat)
+				stdevBands = self.addSTDdev(landsat)
+
+				medoidDown = ee.Image(self.medoidMosaicPercentiles(landsat,self.env.percentiles[0]))
+				medoidUp = self.medoidMosaicPercentiles(landsat,self.env.percentiles[1])
+				mosaic = img.addBands(medoidDown).addBands(medoidUp).addBands(stdevBands)
+
+				
 			
-			print("calculating medoid")
-			img = self.medoidMosaic(landsat)
-						
+			if self.env.compositingMethod == 'Median':
+				print("calculating Median")
+				print(landsat.first().getInfo()['bands'])
+				img = self.medianMosaic(landsat)
+				imgPercentials = self.medianPercentiles(landsat, self.env.percentiles)
+				stdevBands = self.addSTDdev(landsat)
+
+				mosaic = img.addBands(imgPercentials).addBands(stdevBands)
+
 			print("rescale")
-			img = self.reScaleLandsat(img)
+			mosaic = self.reScaleLandsat(mosaic)
 						
 			print("set MetaData")
-			img = self.setMetaData(img)
+			mosaic = self.setMetaData(mosaic)
 			
 			print("exporting composite")
-			self.exportMap(img,studyArea,week)
-			#print(img.getInfo()['properties'])
+			self.exportMap(mosaic,studyArea,week)
+
+			return mosaic
+	def medoidMosaicPercentiles(self,inCollection,p):
+		' calculate the medoid of a percentile'
+		
+		inCollection = inCollection.select(self.env.medoidBands)
+		
+		p1 = p
+		p2 = 100 -p
+		
+		med1 = self.medoidPercentiles(inCollection,p1).select(["green","nir"])
+		med2 = self.medoidPercentiles(inCollection,p2).select(["blue","red","swir1","swir2"])
+  
+		medoidP = self.renameBands(ee.Image(med1).addBands(med2),str("p")+str(p))
+		return medoidP
+
+	def medoidPercentiles(self,inCollection,p):
+
+		# Find band names in first image
+		bandNumbers = ee.List.sequence(1,self.env.medoidBands.length());
+
+		# Find the median
+		percentile = inCollection.select(self.env.medoidBands).reduce(ee.Reducer.percentile([p]));
+		
+		def subtractPercentile(img):
+			diff = ee.Image(img).subtract(percentile).pow(ee.Image.constant(2));
+			return diff.reduce('sum').addBands(img);
+		
+		percentile = inCollection.map(subtractPercentile)
+		
+		percentile = ee.ImageCollection(percentile).reduce(ee.Reducer.min(self.env.medoidBands.length().add(1))).select(bandNumbers,self.env.medoidBands);
+  
+		return percentile;
+
+	def renameBands(self,image,prefix):
+		'rename bands with prefix'
+		
+		bandnames = image.bandNames();
+
+		def mapBands(band):
+			band = ee.String(prefix).cat('_').cat(band);
+			return band;
+				
+		bandnames = bandnames.map(mapBands)
+		
+		image = image.rename(bandnames);
+
+		return image;
+
+	def addSTDdev(self,collection):
+		
+		def addSTDdevIndices(img):
+			""" Function to add common (and less common) spectral indices to an image.
+			Includes the Normalized Difference Spectral Vector from (Angiuli and Trianni, 2014) """
+			img = img.addBands(img.normalizedDifference(['green','swir1']).rename(['ND_green_swir1']));  # NDSI, MNDWI
+			img = img.addBands(img.normalizedDifference(['nir','red']).rename(['ND_nir_red']));  # NDVI
+			img = img.addBands(img.normalizedDifference(['nir','swir2']).rename(['ND_nir_swir2']));  # NBR, MNDVI
+			
+			return img;       
+		
+		
+		
+		blue_stdDev = collection.select(["blue"]).reduce(ee.Reducer.stdDev()).rename(['blue_stdDev'])
+		red_stdDev = collection.select(["red"]).reduce(ee.Reducer.stdDev()).rename(['red_stdDev'])
+		green_stdDev = collection.select(["green"]).reduce(ee.Reducer.stdDev()).rename(['green_stdDev'])
+		nir_stdDev = collection.select(["nir"]).reduce(ee.Reducer.stdDev()).rename(['nir_stdDev'])
+		swir1_stdDev = collection.select(["swir1"]).reduce(ee.Reducer.stdDev()).rename(['swir1_stdDev'])
+		swir2_stdDev = collection.select(["swir2"]).reduce(ee.Reducer.stdDev()).rename(['swir2_stdDev'])
+		
+		col = collection.map(addSTDdevIndices)
+		
+		ND_green_swir1 = col.select(['ND_green_swir1']).reduce(ee.Reducer.stdDev()).rename(['ND_green_swir1_stdDev']);
+		ND_nir_red = col.select(['ND_nir_red']).reduce(ee.Reducer.stdDev()).rename(['ND_nir_red_stdDev']);
+		ND_nir_swir2 = col.select(['ND_nir_swir2']).reduce(ee.Reducer.stdDev()).rename(['ND_nir_swir2_stdDev']);
+		# svvi = sd(1,2,3,4,5,6,7)-sd(5,6,7)
+		irStd = nir_stdDev.add(swir1_stdDev).add(swir2_stdDev)
+		allStd = blue_stdDev.add(red_stdDev).add(green_stdDev).add(nir_stdDev).add(swir1_stdDev).add(swir2_stdDev)
+		svvi = allStd.subtract(irStd).rename(['svvi'])
+
+		stdevBands = ee.Image(blue_stdDev.addBands(red_stdDev).addBands(green_stdDev).addBands(nir_stdDev).addBands(swir1_stdDev).addBands(swir2_stdDev)\
+								.addBands(ND_green_swir1).addBands(ND_nir_red).addBands(ND_nir_swir2).addBands(svvi))
+		
+		return stdevBands
 
 	def addDateYear(self,img):
 		#add a date and year band
@@ -203,9 +305,9 @@ class functions():
 		day = date.getRelative('day','year').add(1);
 		yr = date.get('year');
 		mk = img.mask().reduce(ee.Reducer.min());
-	  	
-	  	img = img.addBands(ee.Image.constant(day).mask(mk).uint16().rename('date'));
-	  	img = img.addBands(ee.Image.constant(yr).mask(mk).uint16().rename('year'));
+		
+		img = img.addBands(ee.Image.constant(day).mask(mk).uint16().rename('date'));
+		img = img.addBands(ee.Image.constant(yr).mask(mk).uint16().rename('year'));
 		
 		return img;
 	
@@ -216,26 +318,26 @@ class functions():
 		shadow = QA.bitwiseAnd(8).neq(0);
 		cloud =  QA.bitwiseAnd(32).neq(0);
 		return img.updateMask(shadow.Not()).updateMask(cloud.Not()).copyProperties(img)		
-         
+		 
 	def scaleLandsat(self,img):
 		"""Landast is scaled by factor 0.0001 """
 		thermal = img.select(ee.List(['thermal'])).multiply(0.1)
 		scaled = ee.Image(img).select(self.env.divideBands).multiply(ee.Number(0.0001))
 		
-		return img.select(['TDOMMask']).addBands(scaled).addBands(thermal)
+		return img.select(['pixel_qa']).addBands(scaled).addBands(thermal)
 		
 	def reScaleLandsat(self,img):
 		"""Landast is scaled by factor 0.0001 """
-		noScaleBands = ee.List(['date','year','TDOMMask','cloudMask','count'])
+		noScaleBands = ee.List(['date','year','cloudMask','count','TDOMMask','pixel_qa'])# ee.List(['date','year','TDOMMask','cloudMask','count'])
 		noScale = ee.Image(img).select(noScaleBands)
 		thermalBand = ee.List(['thermal'])
 		thermal = ee.Image(img).select(thermalBand).multiply(10)
-                
+				
 		otherBands = ee.Image(img).bandNames().removeAll(thermalBand).removeAll(noScaleBands)
 		scaled = ee.Image(img).select(otherBands).divide(0.0001)
-        
+		
 		image = ee.Image(scaled.addBands([thermal,noScale])).int16()
-        
+		
 		return image.copyProperties(img)
 
 	def maskHaze(self,img):
@@ -278,9 +380,9 @@ class functions():
 		score =  score.min(ndsi_rescale).multiply(100).byte();
 		mask = score.lt(self.env.cloudScoreThresh).rename(['cloudMask']);
 		img = img.updateMask(mask).addBands([mask]);
-        
+		
 		return img;
-        
+		
 	def maskShadows(self,collection):
 
 		def TDOM(image):
@@ -297,8 +399,8 @@ class functions():
 		shadowSumBands = ['nir','swir1']
 
 		# Get some pixel-wise stats for the time series
-		irStdDev = self.fullCollection.select(shadowSumBands).reduce(ee.Reducer.stdDev())
-		irMean = self.fullCollection.select(shadowSumBands).reduce(ee.Reducer.mean())
+		irStdDev = ee.Image('projects/Sacha/AncillaryData/TDOM/irStdDev_jd')
+		irMean = ee.Image('projects/Sacha/AncillaryData/TDOM/irMean_jd')
 
 		# Mask out dark dark outliers
 		collection_tdom = collection.map(TDOM)
@@ -309,7 +411,7 @@ class functions():
 		
 		
 		degree2radian = 0.01745;
-		otherBands = img.select(['thermal','date','year','TDOMMask','cloudMask'])
+		otherBands = img.select(['thermal','date','year','TDOMMask','cloudMask','pixel_qa'])
 
 		def topoCorr_IC(img):
 			
@@ -341,9 +443,9 @@ class functions():
 			sinS = slp_rad.sin();
 			cosAziDiff = (SA_rad.subtract(asp_rad)).cos();
 			aspect_illumination = sinZ.expression("sinZ * sinS * cosAziDiff", \
-                                           {'sinZ': sinZ, \
-                                            'sinS': sinS, \
-                                            'cosAziDiff': cosAziDiff});
+										   {'sinZ': sinZ, \
+											'sinS': sinS, \
+											'cosAziDiff': cosAziDiff});
 			
 			# full illumination condition (IC)
 			ic = slope_illumination.add(aspect_illumination);
@@ -359,8 +461,8 @@ class functions():
 			img_plus_ic = img;
 			mask1 = img_plus_ic.select('nir').gt(-0.1);
 			mask2 = img_plus_ic.select('slope').gte(5) \
-                            .And(img_plus_ic.select('IC').gte(0)) \
-                            .And(img_plus_ic.select('nir').gt(-0.1));
+							.And(img_plus_ic.select('IC').gte(0)) \
+							.And(img_plus_ic.select('nir').gt(-0.1));
 
 			img_plus_ic_mask2 = ee.Image(img_plus_ic.updateMask(mask2));
 
@@ -380,7 +482,7 @@ class functions():
 				method = 'SCSc';
 						
 				out = ee.Image(1).addBands(img_plus_ic_mask2.select('IC', band)).reduceRegion(reducer= ee.Reducer.linearRegression(2,1), \
-  																	   geometry= ee.Geometry(img.geometry().buffer(-5000)), \
+																	   geometry= ee.Geometry(img.geometry().buffer(-5000)), \
 																		scale= self.env.terrainScale, \
 																		bestEffort =True,
 																		maxPixels=1e10)
@@ -416,7 +518,7 @@ class functions():
 			bandList_IC = ee.List([bandList, 'IC']).flatten();
 			
 			img_SCSccorr = img_SCSccorr.unmask(img_plus_ic.select(bandList_IC)).select(bandList);
-  			
+			
 			return img_SCSccorr.unmask(img_plus_ic.select(bandList)) 
 	
 		
@@ -432,56 +534,56 @@ class functions():
 		fringeCountThreshold = 279
 
 		k = ee.Kernel.fixed(41, 41, 
-                                [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]);
+								[[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
+								[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]);
 
 
 		m = ee.Image(img).mask().reduce(ee.Reducer.min())
 		sum = m.reduceNeighborhood(ee.Reducer.sum(), k, 'kernel')
 		mask = sum.gte(fringeCountThreshold)        
-        
+		
 		return img.updateMask(mask)
 
- 	def brdf(self,img):   
+	def brdf(self,img):   
 		
 		import sun_angles
 		import view_angles
@@ -547,8 +649,8 @@ class functions():
 			kvol0 = p30.divide(p40).subtract(p50).rename(['kvol0'])
 
 			return (kvol, kvol0)
-         
- 		date = img.date()
+		 
+		date = img.date()
 		footprint = determine_footprint(img)
 		(sunAz, sunZen) = sun_angles.create(date, footprint)
 		(viewAz, viewZen) = view_angles.create(footprint)
@@ -559,34 +661,49 @@ class functions():
 		""" medoid composite with equal weight among indices """
 		nImages = ee.ImageCollection(collection).select([0]).count().rename('count')
 		bandNames = ee.Image(collection.first()).bandNames()
-		otherBands = bandNames.removeAll(self.env.divideBands)
+		otherBands = bandNames.removeAll(self.env.medoidIncludeBands)
 
 		others = collection.select(otherBands).reduce(ee.Reducer.mean()).rename(otherBands);
 		
-		collection = collection.select(self.env.divideBands)
+		collection = collection.select(self.env.medoidIncludeBands)
 
-		bandNumbers = ee.List.sequence(1,self.env.divideBands.length());
+		bandNumbers = ee.List.sequence(1,self.env.medoidIncludeBands.length());
 
-		median = ee.ImageCollection(collection).median()
-        
+		median = ee.ImageCollection(collection).select(self.env.divideBands).median()
+		
 		def subtractmedian(img):
-			diff = ee.Image(img).subtract(median).pow(ee.Image.constant(2));
+			diff = ee.Image(img).select(self.env.divideBands).subtract(median).pow(ee.Image.constant(2));
 			return diff.reduce('sum').addBands(img);
-        
+		
 		medoid = collection.map(subtractmedian)
   
-		medoid = ee.ImageCollection(medoid).reduce(ee.Reducer.min(self.env.divideBands.length().add(1))).select(bandNumbers,self.env.divideBands);
+		medoid = ee.ImageCollection(medoid).reduce(ee.Reducer.min(self.env.medoidIncludeBands.length().add(1))).select(bandNumbers,self.env.medoidIncludeBands);
   
 		return medoid.addBands(others).addBands(nImages);		
 
 	def medianMosaic(self,collection):
 		
 		""" median composite """ 
-		median = collection.select(medianIncludeBands).median();
-		othersBands = bandNames.removeAll(medianIncludeBands);
-		others = collection.select(otherBands).mean();
-    
-		return median.addBands(others)
+		nImages = ee.ImageCollection(collection).select([0]).count().rename('count')
+		bandNames = collection.first().bandNames()
+		bandNumbers = ee.List.sequence(1,self.env.medoidBands.length());
+
+		median = ee.ImageCollection(collection).select(self.env.medoidBands).reduce(ee.Reducer.median()).rename(self.env.medoidBands);
+		othersBands = bandNames.removeAll(self.env.medoidBands);
+
+		others = collection.select(othersBands).reduce(ee.Reducer.mean()).rename(othersBands);
+	
+		return median.addBands(others).addBands(nImages)
+	
+	def medianPercentiles(self, collection, p):
+
+		''' Build Meidan Perntiles:
+
+			Takes an Image Collection, and a list of percentiles. 
+		'''
+		collection = collection.select(self.env.medoidBands).reduce(ee.Reducer.percentile(p))
+		
+		return collection
 
 	def setMetaData(self,img):
 
@@ -595,7 +712,7 @@ class functions():
 									 'startDOY':str(self.env.startDoy),
 									 'endDOY':str(self.env.endDoy),
 									 'assetId':str(self.env.assetId),
-									 'compositingMethod':'medoid',
+									 'compositingMethod':self.env.compositingMethod,
 									 'toaOrSR':'SR',
 									 'epsg':str(self.env.epsg),
 									 'exportScale':str(self.env.exportScale),
@@ -642,8 +759,8 @@ if __name__ == "__main__":
 	ee.Initialize()
 
 	start = 0
+	for i in range(0,235,1):
 
-	for i in range(0,105,1):
 		#2018 starts at week 104
 		startWeek = start+ i
 		print startWeek
@@ -651,12 +768,21 @@ if __name__ == "__main__":
 		year = ee.Date("2009-01-01")
 		startDay = (startWeek -1) *14
 		endDay = (startWeek) *14 -1
-
-		startDate = year.advance(startDay,'day') 
+		startDate = year.advance(startDay,'day')
 		endDate = year.advance(endDay,'day')
 
-		regionName = 'SIERRA'
+		# set up for yearly exports.
+		# startDay = 0
+		# endDay = 364
+
+		# startDate = year.advance(startDay,'day').advance(i,'year') 
+		# endDate = year.advance(endDay,'day').advance(i,'year')
+
+		regionName = 'AMAZONIA NOROCCIDENTAL'
 		studyArea =  ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
 		studyArea = studyArea.filterMetadata('PROVINCIA','equals',regionName).geometry().bounds()
 		
-		print(functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName))
+		functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName)
+
+
+
