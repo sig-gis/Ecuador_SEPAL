@@ -159,7 +159,6 @@ class functions():
 
 		landsat = landsat5.merge(landsat7).merge(landsat8)
 				  
-
 		if landsat.size().getInfo() > 0:
 			
 			# mask clouds using the QA band
