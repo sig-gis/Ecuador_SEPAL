@@ -79,7 +79,7 @@ class env(object):
 		# Export variables		  		         #
 		##########################################		
 
-		self.assetId ="projects/Sacha/S2/S2_Biweekly/"
+		self.assetId ="projects/Sacha/PreprocessedData/S2_Biweekly_V3/"
 		self.name = "S2_BW_" 
 		self.exportScale = 20
 		
@@ -95,12 +95,12 @@ class env(object):
 		##########################################
 		# enable / disable modules 		         #
 		##########################################		
-		self.calcSR = False     
-		self.brdf = True
+		self.calcSR = True     
+		self.brdf = False
 		self.QAcloudMask = True
 		self.cloudMask = True
 		self.shadowMask = True
-		self.terrainCorrection = True
+		self.terrainCorrection = False
 
 
 class functions():       
@@ -776,5 +776,6 @@ if __name__ == "__main__":
 		regionName = 'AMAZONIA NOROCCIDENTAL'
 		studyArea =  ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
 		studyArea = studyArea.filterMetadata('PROVINCIA','equals',regionName).geometry().bounds()
+		studyArea = studyArea.geometry().bounds()
 		
 		print(functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName))
