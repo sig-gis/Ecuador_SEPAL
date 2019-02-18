@@ -27,14 +27,14 @@ class env(object):
 		self.metadataCloudCoverMax = 80;
 
 		##########################################
-		# Export variables		  		         #
-		##########################################		
+		# Export variables                       #
+		##########################################      
 
-		self.assetId ="projects/Sacha/PreprocessedData/L8_Biweekly_V5/"
+		self.assetId ="projects/Sacha/PreprocessedData/L8_Biweekly_V6/"
 		self.name = "LS_BW_" 
 
 
-		self.exportScale = 20		
+		self.exportScale = 20       
 		
 		##########################################
 		# variable for the shadowMask  algorithm #
@@ -57,12 +57,12 @@ class env(object):
 		# and cloud shadows by. Intended to include edges of clouds/cloud shadows 
 		# that are often missed (1.5 results in a 1 pixel buffer)(0.5 results in a 0 pixel buffer)
 		# (2.5 or 3.5 generally is sufficient)
-		self.dilatePixels = 3.25;	
+		self.dilatePixels = 3.25;   
 		
 		
 		##########################################
 		# variable for cloudScore  algorithm     #
-		##########################################	
+		##########################################  
 		
 		# 9. Cloud and cloud shadow masking parameters.
 		# If cloudScoreTDOM is chosen
@@ -72,24 +72,28 @@ class env(object):
 		
 		# Percentile of cloud score to pull from time series to represent a minimum for 
 		# the cloud score over time for a given pixel. Reduces commission errors over 
-		# cool bright surfaces. Generally between 5 and 10 works well. 0 generally is a bit noisy	
-		self.cloudScorePctl = 8 	
+		# cool bright surfaces. Generally between 5 and 10 works well. 0 generally is a bit noisy   
+		self.cloudScorePctl = 8     
 		self.hazeThresh = 195
 		
 		##########################################
 		# variable for terrain  algorithm        #
-		##########################################		
+		##########################################      
 		
 		self.terrainScale = 600
 		
 		##########################################
-		# variable band selection  		         #
+		# variable band selection                #
 		##########################################
 		self.percentiles = [25,75]
+		self.medianPercentileBands = ee.List(['blue','green','red','nir','swir1','swir2','date','pixel_qa','cloudScore'])
 
-		self.medoidBands = ee.List(['blue','green','red','nir','swir1','swir2'])
 		self.divideBands = ee.List(['blue','green','red','nir','swir1','swir2'])
+		self.medoidBands = ee.List(['blue','green','red','nir','swir1','swir2'])
 		self.medoidIncludeBands = ee.List(['blue','green','red','nir','swir1','swir2','pixel_qa'])
+
+		self.noScaleBands = ee.List(['date','year','cloudMask','count','TDOMMask','pixel_qa','cloudScore'])
+
 		self.bandNamesLandsat = ee.List(['blue','green','red','nir','swir1','thermal','swir2','sr_atmos_opacity','pixel_qa','radsat_qa'])
 		self.sensorBandDictLandsatSR = ee.Dictionary({'L8' : ee.List([1,2,3,4,5,7,6,9,10,11]),\
 													  'L7' : ee.List([0,1,2,3,4,5,6,7,9,10]),\
@@ -98,15 +102,15 @@ class env(object):
 		
 		
 		##########################################
-		# enable / disable modules 		         #
-		##########################################		  
+		# enable / disable modules               #
+		##########################################        
 		self.maskSR = True
-		self.cloudMask = True
-		self.hazeMask = True
-		self.shadowMask = True
+		self.cloudMask = False
+		self.hazeMask = False
+		self.shadowMask = False
 		self.brdfCorrect = True
 		self.terrainCorrection = True
-		self.biweek = True
+		self.includePercentiles = True
 		self.compositingMethod = 'Medoid'
 
 
@@ -122,14 +126,13 @@ class functions():
 		self.env.startDate = startDate
 		self.env.endDate = endDate
 
-
 		self.env.startDoy = startDay
 		self.env.endDoy = endDay
 		self.env.regionName = regionName
 		
 		self.studyArea = studyArea
+		# Set cloud score and tdomm paramters based of region
 		self.paramSwitch = Switcher().paramSelect(self.env.regionName)
-
 		self.env.cloudScoreThresh = self.paramSwitch[0]
 		self.env.cloudScorePctl= self.paramSwitch[1]
 		self.env.zScoreThresh= self.paramSwitch[2]
@@ -137,7 +140,9 @@ class functions():
 		self.env.contractPixels= self.paramSwitch[4]
 		self.env.dilatePixels= self.paramSwitch[5]
 
-		#studyArea = ee.FeatureCollection("users/apoortinga/countries/Ecuador_nxprovincias").geometry().bounds();
+		# Set correct no scale bands depending on enabled / disabled modules
+		self.updateNoScaleBands()
+		print(self.env.noScaleBands.getInfo())
 		
 		landsat8 = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR').filterDate(self.env.startDate,self.env.endDate).filterBounds(studyArea)
 		landsat8 = landsat8.filterMetadata('CLOUD_COVER','less_than',self.env.metadataCloudCoverMax)
@@ -159,52 +164,49 @@ class functions():
 			
 			# mask clouds using the QA band
 			if self.env.maskSR == True:
-				#print "removing clouds" 
+				print "removing clouds" 
 				landsat = landsat.map(self.CloudMaskSRL8)
+
 
 			# mask clouds using cloud mask function
 			if self.env.hazeMask == True:
-				#print "removing haze"
+				print "removing haze"
 				landsat = landsat.map(self.maskHaze)
 	
 			landsat = landsat.map(self.scaleLandsat).map(self.addDateYear)
 
-			# mask clouds using cloud mask function
 			if self.env.cloudMask == True:
-				#print "removing some more clouds"
+				print "removing some more clouds"
 				landsat = landsat.map(self.maskClouds)
 
 			# mask clouds using cloud mask function
 			if self.env.shadowMask == True:
-				#print "shadow masking"
+				print "shadow masking"
 				landsat = self.maskShadows(landsat)
-
+				
 			if self.env.brdfCorrect == True:
 				landsat = landsat.map(self.brdf)
-
-						
+	
 			if self.env.terrainCorrection == True:
 				landsat = ee.ImageCollection(landsat.map(self.terrain))
 
 			if self.env.compositingMethod == 'Medoid':
 				print("calculating medoid")
-				img = self.medoidMosaic(landsat)
-				stdevBands = self.addSTDdev(landsat)
-
-				medoidDown = ee.Image(self.medoidMosaicPercentiles(landsat,self.env.percentiles[0]))
-				medoidUp = self.medoidMosaicPercentiles(landsat,self.env.percentiles[1])
-				mosaic = img.addBands(medoidDown).addBands(medoidUp).addBands(stdevBands)
-
+				mosaic = self.medoidMosaic(landsat)
+				if self.env.includePercentiles:
+					medoidDown = ee.Image(self.medoidMosaicPercentiles(landsat,self.env.percentiles[0]))
+					medoidUp = self.medoidMosaicPercentiles(landsat,self.env.percentiles[1])
+					stdevBands = self.addSTDdev(landsat)
+					mosaic = mosaic.addBands(medoidDown).addBands(medoidUp).addBands(stdevBands)
 				
 			
 			if self.env.compositingMethod == 'Median':
 				print("calculating Median")
-				print(landsat.first().getInfo()['bands'])
-				img = self.medianMosaic(landsat)
-				imgPercentials = self.medianPercentiles(landsat, self.env.percentiles)
-				stdevBands = self.addSTDdev(landsat)
-
-				mosaic = img.addBands(imgPercentials).addBands(stdevBands)
+				mosaic = self.medianMosaic(landsat)
+				if self.env.includePercentiles:
+					imgPercentials = self.medianPercentiles(landsat, self.env.percentiles)
+					stdevBands = self.addSTDdev(landsat)
+					mosaic = img.addBands(imgPercentials).addBands(stdevBands)
 
 			print("rescale")
 			mosaic = self.reScaleLandsat(mosaic)
@@ -214,7 +216,7 @@ class functions():
 			
 			print("exporting composite")
 			self.exportMap(mosaic,studyArea,week)
-
+			print(mosaic.getInfo()['bands'])
 			return mosaic
 	def medoidMosaicPercentiles(self,inCollection,p):
 		' calculate the medoid of a percentile'
@@ -317,7 +319,7 @@ class functions():
 		
 		shadow = QA.bitwiseAnd(8).neq(0);
 		cloud =  QA.bitwiseAnd(32).neq(0);
-		return img.updateMask(shadow.Not()).updateMask(cloud.Not()).copyProperties(img)		
+		return img.updateMask(shadow.Not()).updateMask(cloud.Not()).copyProperties(img)     
 		 
 	def scaleLandsat(self,img):
 		"""Landast is scaled by factor 0.0001 """
@@ -328,7 +330,7 @@ class functions():
 		
 	def reScaleLandsat(self,img):
 		"""Landast is scaled by factor 0.0001 """
-		noScaleBands = ee.List(['date','year','cloudMask','count','TDOMMask','pixel_qa'])# ee.List(['date','year','TDOMMask','cloudMask','count'])
+		noScaleBands = self.env.noScaleBands #ee.List(['date','year','cloudMask','count','TDOMMask','pixel_qa','cloudScore'])# ee.List(['date','year','TDOMMask','cloudMask','count'])
 		noScale = ee.Image(img).select(noScaleBands)
 		thermalBand = ee.List(['thermal'])
 		thermal = ee.Image(img).select(thermalBand).multiply(10)
@@ -339,6 +341,13 @@ class functions():
 		image = ee.Image(scaled.addBands([thermal,noScale])).int16()
 		
 		return image.copyProperties(img)
+
+	def updateNoScaleBands(self):
+		""" removes bands if not being used from no scale bands list """
+		if self.env.cloudMask != True : 
+			self.env.noScaleBands = self.env.noScaleBands.remove('cloudMask').remove('cloudScore') 
+			self.env.medianPercentileBands = self.env.medianPercentileBands.remove('cloudScore')
+		if self.env.shadowMask != True : self.env.noScaleBands = self.env.noScaleBands.remove('TDOMMask')
 
 	def maskHaze(self,img):
 		""" mask haze """
@@ -377,9 +386,9 @@ class functions():
 		# However, clouds are not snow.
 		ndsi = img.normalizedDifference(['green', 'swir1']);
 		ndsi_rescale = ndsi.subtract(ee.Number(0.8)).divide(ee.Number(0.6).subtract(ee.Number(0.8)))
-		score =  score.min(ndsi_rescale).multiply(100).byte();
+		score =  score.min(ndsi_rescale).multiply(100).byte().rename('cloudScore');
 		mask = score.lt(self.env.cloudScoreThresh).rename(['cloudMask']);
-		img = img.updateMask(mask).addBands([mask]);
+		img = img.updateMask(mask).addBands([mask]).addBands(score);
 		
 		return img;
 		
@@ -411,7 +420,7 @@ class functions():
 		
 		
 		degree2radian = 0.01745;
-		otherBands = img.select(['thermal','date','year','TDOMMask','cloudMask','pixel_qa'])
+		otherBands = img.select(self.env.noScaleBands.add('thermal').remove('count'))#['thermal','date','year','TDOMMask','cloudMask','pixel_qa','cloudScore'])
 
 		def topoCorr_IC(img):
 			
@@ -679,7 +688,7 @@ class functions():
   
 		medoid = ee.ImageCollection(medoid).reduce(ee.Reducer.min(self.env.medoidIncludeBands.length().add(1))).select(bandNumbers,self.env.medoidIncludeBands);
   
-		return medoid.addBands(others).addBands(nImages);		
+		return medoid.addBands(others).addBands(nImages);       
 
 	def medianMosaic(self,collection):
 		
@@ -698,10 +707,9 @@ class functions():
 	def medianPercentiles(self, collection, p):
 
 		''' Build Meidan Perntiles:
-
 			Takes an Image Collection, and a list of percentiles. 
 		'''
-		collection = collection.select(self.env.medoidBands).reduce(ee.Reducer.percentile(p))
+		collection = collection.select(self.env.medianPercentileBands).reduce(ee.Reducer.percentile(p))
 		
 		return collection
 
@@ -736,8 +744,8 @@ class functions():
 	def exportMap(self,img,studyArea,week):
 
 		geom  = studyArea.getInfo();
-		sd = str(self.env.startDate.getRelative('day','year').getInfo()).zfill(3);
-		ed = str(self.env.endDate.getRelative('day','year').getInfo()).zfill(3);
+		sd = str(self.env.startDate.getRelative('day','year').add(1).getInfo()).zfill(3);
+		ed = str(self.env.endDate.getRelative('day','year').add(1).getInfo()).zfill(3);
 		year = str(self.env.startDate.get('year').getInfo());
 		regionName = self.env.regionName.replace(" ",'_') + "_"
 
@@ -757,32 +765,32 @@ class functions():
 if __name__ == "__main__":        
 
 	ee.Initialize()
-
 	start = 0
-	for i in range(0,235,1):
+	# choose if you export biweekly or yearly 
+	yearly = False
+	
+	for i in range(0,1,1):
 
-		#2018 starts at week 104
+		#2017 starts at week 212
 		startWeek = start+ i
 		print startWeek
 	
 		year = ee.Date("2009-01-01")
-		startDay = (startWeek -1) *14
-		endDay = (startWeek) *14 -1
-		startDate = year.advance(startDay,'day')
-		endDate = year.advance(endDay,'day')
+		
+		if yearly:
+			startDay = 0
+			endDay = 364
 
-		# set up for yearly exports.
-		# startDay = 0
-		# endDay = 364
+			startDate = year.advance(startDay,'day').advance(i,'year') 
+			endDate = year.advance(endDay,'day').advance(i,'year')
+		else:
+			startDay = (startWeek -1) *14
+			endDay = (startWeek) *14 -1
+			startDate = year.advance(startDay,'day')
+			endDate = year.advance(endDay,'day')
 
-		# startDate = year.advance(startDay,'day').advance(i,'year') 
-		# endDate = year.advance(endDay,'day').advance(i,'year')
-
-		regionName = 'AMAZONIA NOROCCIDENTAL'
+		regionName = 'ANDES DEL NORTE'
 		studyArea =  ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
 		studyArea = studyArea.filterMetadata('PROVINCIA','equals',regionName).geometry().bounds()
 		
 		functions().main(studyArea,startDate,endDate,startDay,endDay,startWeek,regionName)
-
-
-
