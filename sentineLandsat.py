@@ -24,15 +24,15 @@ class env(object):
 		##########################################
 		# variable for the landsat data request #
 		##########################################
-		self.metadataCloudCoverMax = 30;
+		self.metadataCloudCoverMax = 80;
 
 		##########################################
 		# Export variables		  		         #
 		##########################################		
 
 		#self.assetId ="projects/Sacha/PreprocessedData/L8_Biweekly_V4/"
-		self.assetId ="projects/Sacha/PreprocessedData/TOA_composites"
-		self.name = "LSS2_ECUADOR_ANNUAL_MEDIAN_2018_000365" 
+		self.assetId ="projects/Sacha/PreprocessedData/S2_Annual_V3/"
+		self.name = "S2_ECUADOR_ANNUAL_MEDIAN_CLDMX80_2018_000365" 
 		self.exportScale = 20		
 	
 		##########################################
@@ -655,7 +655,7 @@ class sentinel2():
 			if self.env.shadowMask == True:
 				s2 = self.maskShadows(s2,studyArea)
 			
-			self.collectionMeta = s2.getInfo()['features']
+			# self.collectionMeta = s2.getInfo()['features']
 			
 			s2 = s2.select(self.env.s2BandsIn,self.env.s2BandsOut).map(self.addDateYear)
 			
@@ -1102,6 +1102,41 @@ class Harmonize():
 		medoid = ee.ImageCollection(medoid).reduce(ee.Reducer.min(bands.length().add(1))).select(bandNumbers,bands)
   
 		return medoid;
+	def addSTDdev(self,collection):
+		
+		def addSTDdevIndices(img):
+			""" Function to add common (and less common) spectral indices to an image.
+			Includes the Normalized Difference Spectral Vector from (Angiuli and Trianni, 2014) """
+			img = img.addBands(img.normalizedDifference(['green','swir1']).rename(['ND_green_swir1']));  # NDSI, MNDWI
+			img = img.addBands(img.normalizedDifference(['nir','red']).rename(['ND_nir_red']));  # NDVI
+			img = img.addBands(img.normalizedDifference(['nir','swir2']).rename(['ND_nir_swir2']));  # NBR, MNDVI
+			
+			return img;       
+		
+		
+		
+		blue_stdDev = collection.select(["blue"]).reduce(ee.Reducer.stdDev()).rename(['blue_stdDev'])
+		red_stdDev = collection.select(["red"]).reduce(ee.Reducer.stdDev()).rename(['red_stdDev'])
+		green_stdDev = collection.select(["green"]).reduce(ee.Reducer.stdDev()).rename(['green_stdDev'])
+		nir_stdDev = collection.select(["nir"]).reduce(ee.Reducer.stdDev()).rename(['nir_stdDev'])
+		swir1_stdDev = collection.select(["swir1"]).reduce(ee.Reducer.stdDev()).rename(['swir1_stdDev'])
+		swir2_stdDev = collection.select(["swir2"]).reduce(ee.Reducer.stdDev()).rename(['swir2_stdDev'])
+		
+		col = collection.map(addSTDdevIndices)
+		
+		ND_green_swir1 = col.select(['ND_green_swir1']).reduce(ee.Reducer.stdDev()).rename(['ND_green_swir1_stdDev']);
+		ND_nir_red = col.select(['ND_nir_red']).reduce(ee.Reducer.stdDev()).rename(['ND_nir_red_stdDev']);
+		ND_nir_swir2 = col.select(['ND_nir_swir2']).reduce(ee.Reducer.stdDev()).rename(['ND_nir_swir2_stdDev']);
+		# svvi = sd(1,2,3,4,5,6,7)-sd(5,6,7)
+		irStd = nir_stdDev.add(swir1_stdDev).add(swir2_stdDev)
+		allStd = blue_stdDev.add(red_stdDev).add(green_stdDev).add(nir_stdDev).add(swir1_stdDev).add(swir2_stdDev)
+		svvi = allStd.subtract(irStd).rename(['svvi'])
+
+		stdevBands = ee.Image(blue_stdDev.addBands(red_stdDev).addBands(green_stdDev).addBands(nir_stdDev).addBands(swir1_stdDev).addBands(swir2_stdDev)\
+								.addBands(ND_green_swir1).addBands(ND_nir_red).addBands(ND_nir_swir2).addBands(svvi))
+		
+		return stdevBands
+
 
 	def exportMap(self,img,studyArea,week):
 
@@ -1131,6 +1166,7 @@ if __name__ == "__main__":
 		print "week", startWeek
 	
 		year = ee.Date("2018-01-01")
+
 		startDay = 0 #(startWeek -1) *14
 		endDay = 365 #(startWeek) *31 -1
 		print startDay, endDay
@@ -1164,11 +1200,17 @@ if __name__ == "__main__":
 		#print percentiles.bandNames().getInfo()
 		nImages = ee.ImageCollection(collection).select([0]).count().rename('count')
 		
-		medoid = medoid.addBands(percentiles)
+		# add std bands
+		stdBnds = Harmonize().addSTDdev(collection)
+		
+		medoid = medoid.addBands(percentiles).addBands(stdBnds)
+
 		medoid = medoid.multiply(10000).int16()
 		medoid = medoid.addBands(nImages)
+		medoid = medoid.set('system:time_start',year)
+		s2 = s2.median().set("system:time_start",startDate.millis())
 		Harmonize().exportMap(medoid,studyArea,startWeek)
 		
-		#print(medoid.bandNames().getInfo())
+		print(medoid.bandNames().getInfo())
 
 
