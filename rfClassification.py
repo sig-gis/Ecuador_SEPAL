@@ -1,4 +1,5 @@
 import ee
+from addCovariates import *
 
 class randomForest():
 
@@ -6,8 +7,9 @@ class randomForest():
 		ee.Initialize()
 
 		self.exportPath = 'users/TEST/'
+		self.epsg = "EPSG:32717"
 		# set number of trees for the random forest classifier
-		self.trees = 100
+		self.trees = 40
 		
 		# set the version number of the product
 		self.versionNumber = 9;
@@ -19,7 +21,7 @@ class randomForest():
 		self.LandsatID = 'TOA_composites_V2'
 		self.DualS1_ID = 'S1Dual_Annual_V2'
 		#  specify the sample dataset
-		self.trainingData = ee.FeatureCollection("projects/Sacha/AncillaryData/RefData/CompiledDataMarch2019")
+		self.trainingData = ee.FeatureCollection("projects/Sacha/AncillaryData/RefData/CompiledData02102019")
 		# // specify the Sentinel 1 and Landsat S2 data set
 		self.Dual_Annual = ee.ImageCollection("projects/Sacha/PreprocessedData/S1Dual_Annual_V2")
 		self.S2LSTOA = ee.ImageCollection("projects/Sacha/PreprocessedData/TOA_composites_V2")
@@ -27,7 +29,7 @@ class randomForest():
 		self.ecoregions = ee.FeatureCollection("projects/Sacha/AncillaryData/StudyRegions/Ecuador_EcoRegions_Complete")
 		
 		# todo need to convert covariates into py
-		self.covariates = require("users/apoortinga/Ecuador:addCovariates")
+		self.covariates = addCovariates()
 		self.bandNames = ee.List(["red", "nir", "swir1", "swir2", 
 
 							"ND_nir_red", "ND_nir_swir1", "ND_nir_swir2", 
@@ -58,8 +60,8 @@ class randomForest():
 		studyArea = self.ecoregions.filter(ee.Filter.eq("PROVINCIA", ProcessingRegion)).geometry().buffer(1000);
 		sampleData = self.trainingData.filterBounds(studyArea)
 
-		imageLandsatS2 = image if kwargs.get(image) else self.S2LSTOA.filterDate(str(year)) 
-		trianingImg  = self.S2LSTOA.filterDate('2016')
+		imageLandsatS2 = image if kwargs.get('image') else self.S2LSTOA.filterDate(str(year)).first() 
+		trianingImg  = self.S2LSTOA.filterDate('2016').first()
 
 		analysisYr = self.addBandsToComposite(imageLandsatS2)
 		trainingYr = self.addBandsToComposite(trianingImg)
@@ -67,7 +69,7 @@ class randomForest():
 
 		data = trainingYr.sampleRegions(sampleData,["niv2_int"],20);
 		classifier = ee.Classifier.randomForest(self.trees,0).train(ee.FeatureCollection(data),"niv2_int",self.bandNames);
-		classification = img.classify(classifier,'Mode');
+		classification = analysisYr.classify(classifier,'Mode');
 
 		# todo think if we want to include this if its not automated
 		classification = classification.set({
@@ -81,18 +83,17 @@ class randomForest():
 
 		classificationMMU = self.sieve(classification,11)
 		
-		
-		self.exportMap(classification,studyArea) if kwargs.get(exportImg) and kwargs.get(mmu) == False or kwargs.get(mmu) == 3 else None
-		self.exportMap(classificationMMU,studyArea) if kwargs.get(exportImg) and kwargs.get(mmu) == True or kwargs.get(mmu) == 3 else None
+		self.mmuEx =  kwargs.get('mmu')
+		self.exportMap(classification,studyArea,"") if kwargs.get('exportImg') and self.mmuEx == False or self.mmuEx == 3 else None
+		self.exportMap(classificationMMU,studyArea,"_MMU") if kwargs.get('exportImg') and self.mmuEx == True or self.mmuEx == 3 else None
 
 		print(classification.bandNames().getInfo())
 		return classification, classificationMMU
 
-	def exportMap(self,img,studyArea):
+	def exportMap(self,img,studyArea, suffix):
 	    img = img
-	    ed = str(year)
-	    ed = 'MMU_' + ed if kwargs.get('mmu') else ed
-	    regionName = ProcessingRegion.replace(" ",'_') + "_"
+	    ed = str(year) + suffix
+	    regionName = ProcessingRegion.replace(" ",'_')
 
 	    task_ordered= ee.batch.Export.image.toAsset(image=img.clip(studyArea), 
 	                              description = regionName + '_LandCover_' + ed, 
@@ -103,34 +104,36 @@ class randomForest():
 	                              scale = 30)
 
 	    task_ordered.start()
-	    print('Export Started: ',self.exportPath + regionName + '_Diff_Comp' + sd + '_' + ed)
+	    print('Export Started: ',self.exportPath + regionName + '_LandCover_' + ed)
 
 	# in functions
 	def addBandsToComposite(self,composite):
-		year = ee.Date(composite.get('system:time_start'))
+		year = ee.Date(composite.get('system:time_start')).get('year')
+		
+		stdBands = composite.select(['svvi','blue_stdDev','red_stdDev','green_stdDev',
+	                                 'nir_stdDev','swir1_stdDev','swir2_stdDev',
+	                                 'ND_green_swir1_stdDev','ND_nir_red_stdDev','ND_nir_swir2_stdDev'])
+		img25 = composite.select(['p25_blue','p25_green','p25_red','p25_nir','p25_swir1','p25_swir2'])
+		img75 = composite.select(['p75_blue','p75_green','p75_red','p75_nir','p75_swir1','p75_swir2'])
 
 		composite = composite.select(['blue','green','red','nir','swir1','swir2'])
 		# adding abnds to the composite
+
 		addJRCAndTopo = self.covariates.addJRCAndTopo(composite)
 		# gets nd for selected bands
 		img = addJRCAndTopo.addBands(self.covariates.addCovariates("",composite));
-		# // gets nd of 25 and 75percentile bands
-		img25 = composite.select(['p25_blue','p25_green','p25_red','p25_nir','p25_swir1','p25_swir2'])
-		img75 = composite.select(['p75_blue','p75_green','p75_red','p75_nir','p75_swir1','p75_swir2'])
 		
+		# // gets nd of 25 and 75percentile bands
 		img = img.addBands(self.covariates.addCovariates("p75_",img75)).addBands(self.covariates.addCovariates("p25_",img25));
 
 		bands = img.bandNames().removeAll(['blue_1','green_1','red_1','nir_1','swir1_1','swir2_1']);
-		img = img.select(bands).addBands(imageLandsatS2.select(['svvi','blue_stdDev','red_stdDev','green_stdDev',
-	                                                        'nir_stdDev','swir1_stdDev','swir2_stdDev',
-	                                                        'ND_green_swir1_stdDev','ND_nir_red_stdDev','ND_nir_swir2_stdDev']))
 
-		Seg = ee.Algorithms.Image.Segmentation.SNIC({'image': img.select(['ND_nir_red']),
-													'size': 20,
-													'compactness': 0,
-													'connectivity': 8,
-													'neighborhoodSize': None,
-													'seeds': None});
+		img = img.select(bands).addBands(stdBands)
+
+		Seg = ee.Algorithms.Image.Segmentation.SNIC(image = img.select(['ND_nir_red']),
+													size = 20,
+													compactness = 0,
+													connectivity = 8);
 
 		img = img.addBands(Seg.select(['clusters']))
 		# the dual pol SAR data is added here
@@ -175,10 +178,10 @@ if __name__ == "__main__":
 	 example: using default image collection and not exporting
 	 randomForest().main(2016,'AMAZONIA NOROCCIDENTAL')
 	
-	exporting mmu
 	randomForest().main(2016,'AMAZONIA NOROCCIDENTAL',exportImg=True,mmu=1)
+	exporting mmu
 	
 	providing your own image and exporting
 	myImg = ee.Image('projects/Sacha/.../LSS2_ECUADOR_ANNUAL_MEDIAN_CLDMX80_2016_000365_ST')
 	randomForest().main(2016,'AMAZONIA NOROCCIDENTAL',exportImg=False,mmu=True, image=myImg) '''
-	randomForest().main(year,ProcessingRegion,exportImg=False,mmu=1)
+	randomForest().main(year,ProcessingRegion,exportImg=True,mmu=3)
