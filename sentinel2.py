@@ -339,11 +339,11 @@ class functions():
                     'B6':PredefinedWavelengths.S2A_MSI_06,
                     'B7':PredefinedWavelengths.S2A_MSI_07,
                     'B8':PredefinedWavelengths.S2A_MSI_08,
-                    'B8A':PredefinedWavelengths.S2A_MSI_09,
-                    'B9':PredefinedWavelengths.S2A_MSI_10,
-                    'B10':PredefinedWavelengths.S2A_MSI_11,
-                    'B11':PredefinedWavelengths.S2A_MSI_12,
-                    'B12':PredefinedWavelengths.S2A_MSI_13}
+                    'B8A':PredefinedWavelengths.S2A_MSI_08A,
+                    'B9':PredefinedWavelengths.S2A_MSI_09,
+                    'B10':PredefinedWavelengths.S2A_MSI_10,
+                    'B11':PredefinedWavelengths.S2A_MSI_11,
+                    'B12':PredefinedWavelengths.S2A_MSI_12}
             elif sensor == 'Sentinel-2B':
                 bandSelect = {
                     'B1': PredefinedWavelengths.S2B_MSI_01,
@@ -354,11 +354,11 @@ class functions():
                     'B6': PredefinedWavelengths.S2B_MSI_06,
                     'B7': PredefinedWavelengths.S2B_MSI_07,
                     'B8': PredefinedWavelengths.S2B_MSI_08,
-                    'B8A': PredefinedWavelengths.S2B_MSI_09,
-                    'B9': PredefinedWavelengths.S2B_MSI_10,
-                    'B10': PredefinedWavelengths.S2B_MSI_11,
-                    'B11': PredefinedWavelengths.S2B_MSI_12,
-                    'B12': PredefinedWavelengths.S2B_MSI_13}
+                    'B8A': PredefinedWavelengths.S2B_MSI_08A,
+                    'B9': PredefinedWavelengths.S2B_MSI_09,
+                    'B10': PredefinedWavelengths.S2B_MSI_10,
+                    'B11': PredefinedWavelengths.S2B_MSI_11,
+                    'B12': PredefinedWavelengths.S2B_MSI_12}
             else:
                 assert None, 'Invalid sensor. Detected %s . Supports "Sentinel-2A" or "Sentinel-2B"' % sensor
 
